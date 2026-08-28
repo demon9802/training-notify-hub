@@ -1,0 +1,3773 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>培训通知助手 v10</title>
+<!-- 渲染核心：与后端 server.js / 云端 Action 共用的唯一 replaceVars/renderContent 实现。
+     必须由本文件先加载（head，classic script，同步执行），下方内联脚本才拿到 window.RenderCore。 -->
+<!-- 本地内置 supabase-js（UMD，挂 window.supabase），不依赖外部 CDN，避免静态托管白屏 -->
+<script src="/supabase.js"></script>
+<script src="/render-core.js"></script>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#ffffff; --ink:#1f2329; --sub:#646a73; --line:#e5e6eb;
+    --brand:#3370ff; --brand2:#0052d9; --ok:#00b42a; --warn:#ff7d00; --err:#f53f3f;
+    --soft:#f2f3f5; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  /* 认证未通过前彻底隐藏业务 UI：避免 file:// / 离线模式下"未登录就暴露后台数据" */
+  body.auth-pending > header,
+  body.auth-pending > .layout{display:none!important}
+  body.auth-pending{background:#f5f6f8}
+  body.auth-offline .modal-mask .modal{border-top:4px solid var(--warn)}
+  a{color:var(--brand);text-decoration:none}
+  header{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);padding:10px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0}
+  .badge{font-size:12px;padding:2px 8px;border-radius:20px;background:var(--soft);color:var(--sub)}
+  .badge.server{background:#e8f3ff;color:var(--brand2)}
+  .save-tip{font-size:12px;color:var(--sub);min-width:120px;text-align:right;white-space:nowrap;margin-left:auto}
+  .breadcrumb{flex:1;min-width:180px;color:var(--sub);font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .breadcrumb b{color:var(--ink);font-weight:600}
+  button{font-family:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:8px;font-size:13px}
+  button:hover{border-color:var(--brand)}
+  button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  button.primary:hover{background:var(--brand2)}
+  button.ghost{background:transparent}
+  button.danger{color:var(--err);border-color:#ffd6d6}
+  .layout{display:flex;max-width:1400px;margin:0 auto;align-items:flex-start;min-height:calc(100vh - 60px)}
+  .sidebar{width:220px;position:sticky;top:50px;max-height:calc(100vh - 60px);overflow:auto;padding:14px 0 14px 14px;flex-shrink:0}
+  .main{flex:1;min-width:0;padding:14px}
+  @media(max-width:900px){.sidebar{display:none}}
+  .nav-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;color:var(--ink);font-size:13px;cursor:pointer;margin-bottom:2px}
+  .nav-item:hover{background:var(--soft)}
+  .nav-item.active{background:#e8f3ff;color:var(--brand2);font-weight:600}
+  .nav-sep{margin:12px 0 6px;font-size:11px;color:var(--sub);text-transform:uppercase;letter-spacing:.5px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+  .card h3{margin:0 0 10px;font-size:15px;display:flex;align-items:center;gap:8px}
+  .card h4{margin:14px 0 8px;font-size:13px;color:var(--sub);text-transform:none;letter-spacing:0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px}
+  label{font-size:12px;color:var(--sub);display:block;margin-bottom:4px}
+  input[type=text],input[type=datetime-local],input[type=date],input[type=time],input[type=search],textarea,select{
+    font-family:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);width:100%
+  }
+  textarea{resize:vertical;min-height:64px;line-height:1.5}
+  .field{flex:1;min-width:160px}
+  .sub{color:var(--sub);font-size:12px}
+  .hint{font-size:11px;color:var(--sub);margin-top:4px;line-height:1.5}
+  .stage{border:1px solid #d2d5de;border-radius:var(--radius);background:#fff;margin-bottom:18px;overflow:hidden;box-shadow:0 1px 3px rgba(31,35,41,.06)}
+  .stage-head{display:flex;align-items:center;gap:8px;padding:14px 16px;background:#eef2ff;border-bottom:1px solid #d6dbe4;border-left:4px solid var(--brand);flex-wrap:nowrap}
+  .stage-head input[type=text]{border:none;background:transparent;padding:0;font-size:15px;font-weight:600;min-width:200px}
+  .stage-head input[type=date]{max-width:140px;border:none;background:transparent;padding:0;font-size:12px;color:var(--sub)}
+  .stage-head button{white-space:nowrap;flex-shrink:0}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+  .seg button{border:none;border-radius:0;background:transparent;padding:5px 14px;font-size:13px;color:var(--sub);cursor:pointer}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.active{background:var(--brand);color:#fff;font-weight:600}
+  .seg-wrap{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+  .seg-wrap .seg-label{font-size:12px;color:var(--sub)}
+  .mode-paste-note{font-size:12px;color:var(--sub);background:#f2f3f5;border-radius:6px;padding:8px 10px;margin:6px 0}
+  .copyrec-table{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .copyrec-row{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+  .cr-stage{font-weight:600;min-width:120px;flex-shrink:0}
+  .cr-aud{color:var(--brand2);min-width:64px;flex-shrink:0}
+  .cr-preview{color:var(--sub);font-size:12px;line-height:1.5;white-space:pre-wrap;flex:1}
+  .copyrec-unclear{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .cr-unclear-item{font-size:12px;color:var(--sub);background:#fffbe8;border:1px solid #ffe7a3;border-radius:8px;padding:8px 10px;white-space:pre-wrap;line-height:1.5}
+  .cr-unclear-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+  .cr-unclear-head select{font-size:12px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);width:auto;min-width:100px}
+  .cr-unclear-head .cr-notif-sel{max-width:130px}
+  .copyrec-row select{width:auto;min-width:100px;max-width:130px}
+  .cr-unclear-body{white-space:pre-wrap;max-height:140px;overflow:auto;line-height:1.6}
+  .identify-block{margin-bottom:8px}
+  [hidden]{display:none !important}
+  .stage-body{padding:14px}
+  .stage.collapsed .stage-body{display:none}
+  .stage.collapsed .stage-head{border-bottom:none}
+  .task{border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;background:#fff;box-shadow:0 1px 3px rgba(31,35,41,.05)}
+  .task-head{display:flex;align-items:center;gap:8px;cursor:pointer}
+  .task-head input[type=text]{border:none;background:transparent;padding:0;font-weight:600;min-width:160px;flex:1}
+  .task-meta-row{display:flex;align-items:center;gap:12px;margin-top:8px;padding-left:30px}
+  .task-meta-row label{font-size:12px;color:var(--sub);margin:0;white-space:nowrap}
+  .task-meta-row input[type=date]{max-width:140px;padding:4px 8px;font-size:12px}
+  .task-body{margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)}
+  .task.collapsed .task-body{display:none}
+  .notif-settings-block{border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:8px;padding:14px;background:#fafbfc;margin-bottom:14px}
+  .notif-settings-block .section-title{margin-top:0}
+  .notif{border:1px solid #e5e6eb;border-left:3px solid #b3d1ff;border-radius:8px;padding:12px;margin-bottom:10px;background:#fff}
+  .notif-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+  .notif-head input[type=text]{border:none;border-bottom:1px solid var(--line);background:transparent;font-size:13px;font-weight:600;color:var(--sub);min-width:200px;flex:1;padding:2px 0}
+  .notif-head input[type=text]:focus{outline:none;border-color:var(--brand);color:var(--ink)}
+  .notif-head .notif-actions{margin-left:auto;display:flex;gap:6px;align-items:center}
+  .notif-body{}
+  .notif.collapsed .notif-body{display:none}
+  .stage-info-block{border:1px solid var(--line);border-left:3px solid #8c6aee;border-radius:8px;padding:14px;background:#fafbfc;margin-bottom:14px}
+  .stage-info-block .section-title{margin-top:0}
+  .stage-head .dates{color:var(--sub);font-size:12px;white-space:nowrap}
+  .tabs{display:flex;gap:6px;margin:8px 0;flex-wrap:wrap}
+  .tab{padding:4px 12px;border:1px solid var(--line);border-radius:20px;font-size:12px;background:#fff;cursor:pointer;white-space:nowrap}
+  .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .tab .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-left:6px;vertical-align:middle}
+  .aud-panel{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fafbfc;overflow:visible}
+  .notif{overflow:visible}
+  .group-pick{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .chk{display:flex;align-items:center;gap:4px;font-size:12px;background:#fff;border:1px solid var(--line);padding:3px 8px;border-radius:6px;cursor:pointer}
+  .chk input{cursor:pointer}
+  .pill{font-size:11px;padding:1px 7px;border-radius:10px;background:var(--soft);color:var(--sub);white-space:nowrap}
+  .pill.student{background:#e8f3ff;color:var(--brand2)}
+  .pill.lecturer{background:#fff3e8;color:#d25f00}
+  .pill.manager{background:#e8fff0;color:#00875a}
+  .pill.test{background:#f5e8ff;color:#7a2eb8}
+  .pill.sent{background:#e8fff0;color:var(--ok)}
+  .pill.failed{background:#ffece8;color:var(--err)}
+  .pill.draft{background:var(--soft);color:var(--sub)}
+  .pill.paused{background:#fff3e0;color:#9a4f00}
+  .pill.today{background:#fff3e8;color:#d25f00}
+  .pill.soon{background:#e8f3ff;color:var(--brand2)}
+  .countdown{font-weight:600;white-space:nowrap}
+  .countdown.urgent{color:var(--err)}
+  .bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 12px;padding:10px 12px;background:#f6f8fb;border:1px solid var(--line);border-radius:8px}
+  .bulkbar .bulkcount{font-size:13px;color:var(--sub);margin-right:auto}
+  .bulkbar button{font-size:12px;padding:5px 10px}
+  .ov-checkbox{width:18px;height:18px;cursor:pointer}
+  .ov-row td,.ov-row th{vertical-align:middle}
+  .ov-row.selected{background:#f0f6ff}
+  .drag-over{outline:2px dashed var(--brand);outline-offset:2px;background:#f2f6ff}
+  .actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
+  .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:none;align-items:center;justify-content:center;padding:20px}
+  .modal-mask.show{display:flex}
+  .modal{background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:86vh;overflow:auto;padding:18px}
+  .modal.wide{max-width:900px}
+  .modal h3{margin-top:0}
+  .ov-detail-body .kv{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #f1f1f4;font-size:13px;line-height:1.6}
+  .ov-detail-body .kv>span{width:74px;flex-shrink:0;color:#8a8f99}
+  .ov-detail-body .kv>b{font-weight:600;word-break:break-all;flex:1}
+  .ov-detail-body .preview-box{margin-top:6px;padding:10px;background:#fafafa;border:1px solid #eee;border-radius:8px;white-space:pre-wrap;font-size:13px;line-height:1.7;max-height:210px;overflow:auto;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+  .wx-preview{border:1px solid var(--line);border-radius:8px;background:#f3f4f6;padding:14px}
+  .wx-msg{background:#fff;border-radius:6px;padding:12px;max-width:420px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .wx-msg .wx-name{font-size:12px;color:#576b95;margin-bottom:6px}
+  .wx-msg .wx-body{font-size:14px;line-height:1.7;word-break:break-word;white-space:pre-wrap}
+  .wx-msg .wx-body img{max-width:100%;border-radius:6px;margin:6px 0;display:block}
+  .wx-msg .wx-body a{color:#576b95}
+  .wx-msg .wx-body strong{font-weight:700}
+  .close-x{float:right;cursor:pointer;color:var(--ink);font-size:22px;font-weight:600;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;transition:background .15s;margin:-6px -6px 0 0}
+  .close-x:hover{background:var(--soft);color:var(--err)}
+  #previewModal{z-index:60}
+  #templateModal{z-index:50}
+  .tpl-modal{display:flex;flex-direction:column;overflow:hidden !important}
+  .tpl-modal .modal-header-sticky{flex-shrink:0;background:#fff;padding-bottom:8px;position:relative;z-index:2}
+  .tpl-modal .modal-scroll-body{flex:1;overflow:auto;padding-right:4px}
+  .tpl-editor-sticky{position:sticky;top:0;background:#fafbfc;z-index:3;padding-top:12px;margin-top:-12px}
+  .empty{color:var(--sub);text-align:center;padding:24px;border:1px dashed var(--line);border-radius:8px}
+  .att-item{border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:6px;background:#fff}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2329;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:80;opacity:0;transition:opacity .2s;max-width:480px;text-align:center}
+  .toast.show{opacity:1}
+  /* warn tone：用于「改时间后自动发送已暂停」「模板过期未更新」等高风险提示，
+     顶部黄色横幅 + 较粗字重 + 停留 6s，比普通底部黑框 toast 更显眼。 */
+  .toast-warn{position:fixed;top:80px;left:50%;bottom:auto;transform:translateX(-50%);background:#f59e0b;color:#1f2329;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:600;z-index:80;opacity:0;transition:opacity .25s;box-shadow:0 4px 16px rgba(0,0,0,.18);max-width:560px;width:max-content;text-align:center;pointer-events:none}
+  .toast-warn.show{opacity:1}
+  .proj-card{border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:#fff;margin-bottom:10px;transition:box-shadow .15s}
+  .proj-card:hover{box-shadow:0 2px 8px rgba(0,0,0,.06);border-color:var(--brand)}
+  .proj-card .title{font-size:15px;font-weight:600;margin-bottom:6px}
+  .proj-meta{font-size:12px;color:var(--sub);margin-bottom:6px}
+  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;background:var(--soft);color:var(--sub);margin-right:4px}
+  .tag.brand{background:#e8f3ff;color:var(--brand2)}
+  .fold-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--line);background:#fff;cursor:pointer;color:var(--sub);font-size:12px}
+  .fold-btn:hover{border-color:var(--brand);color:var(--brand)}
+  .section-title{display:flex;align-items:center;justify-content:space-between;margin:16px 0 8px}
+  .section-title h4{margin:0;font-size:14px;font-weight:600;color:var(--ink)}
+  .search-wrap{position:relative;width:100%}
+  .search-wrap input{padding-left:28px}
+  .search-icon{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--sub);font-size:12px}
+  .mini-btn{font-size:12px;padding:3px 8px}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;padding:0 0 12px;align-items:center}
+  .toolbar-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .group-row{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:#fff}
+  .group-row .name{flex:1;font-weight:500}
+  .group-row .url{flex:2;color:var(--sub);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pinned{background:#fffbe8 !important;border-color:#ffe7a3 !important}
+  .vars{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+  .vars button{font-size:11px;padding:3px 8px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--sub);font-weight:500;background:var(--soft)}
+  /* 导航树 */
+  .nav-tree{margin-left:8px;border-left:1px dashed var(--line);padding-left:6px}
+  .nav-stage{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;color:var(--ink)}
+  .nav-stage:hover{background:var(--soft)}
+  .nav-stage.active{background:#e8f3ff;color:var(--brand2);font-weight:600}
+  .nav-notif{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 20px;border-radius:6px;font-size:12px;color:var(--sub);cursor:pointer}
+  .nav-notif:hover{background:var(--soft);color:var(--ink)}
+  .nav-notif.active{background:#e8f3ff;color:var(--brand2);font-weight:600}
+  .nav-notif .dot{width:5px;height:5px;border-radius:50%;background:var(--ok);flex-shrink:0}
+  .nav-head{display:flex;align-items:center;justify-content:space-between;margin:6px 0 4px}
+  .nav-head small{color:var(--sub);font-size:11px}
+  .header-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+  .auth-indicator{font-size:12px;color:#16a34a;background:#dcfce7;border:1px solid #86efac;border-radius:20px;padding:3px 10px;white-space:nowrap}
+  /* 关联群选择 */
+  .assoc-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px;border:1px dashed var(--line);border-radius:8px;background:#fafbfc}
+  .assoc-bar.empty{background:transparent;border-style:dashed}
+  .picker-row{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:#fff;cursor:pointer}
+  .picker-row:hover{background:var(--soft)}
+  .picker-row.selected{background:#e8f3ff;border-color:var(--brand)}
+  .tpl-chip{display:inline-block;font-size:11px;padding:1px 6px;border-radius:10px;background:#eef3ff;color:var(--brand2);margin:2px 4px 0 0;font-family:Menlo,Consolas,monospace}
+  .tpl-preview-box{background:#fafbfc;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:200px;overflow:auto;color:#333}
+  /* 主页 */
+  .home-search{padding:8px 10px;margin-bottom:8px}
+  .home-search input{padding-left:28px}
+  .home-topbar{display:flex;gap:10px;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+  .home-topbar .field{margin:0;min-width:120px}
+  .section-empty{color:var(--sub);text-align:center;padding:40px 20px;border:1px dashed var(--line);border-radius:8px}
+  .category-add{color:var(--brand);cursor:pointer;font-size:12px;margin-left:auto}
+  .field-dropdown{position:relative;display:inline-block;z-index:40}
+  .field-dropdown .menu{position:absolute;left:0;bottom:100%;top:auto;margin-bottom:6px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 -4px 14px rgba(0,0,0,.12);min-width:200px;z-index:40;display:none;max-height:240px;overflow:auto;padding:4px 0}
+  .field-dropdown .menu.show{display:block}
+  .field-dropdown .menu-group{padding:4px 10px;font-size:11px;color:var(--sub);background:#fafbfc}
+  .field-dropdown .menu-item{padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
+  .field-dropdown .menu-item:hover{background:#f2f6ff;color:var(--brand2)}
+  .btn-split{position:relative;display:inline-flex;align-items:stretch;border:1px solid var(--line);border-radius:8px;overflow:visible}
+  .btn-split button{border:none;border-radius:0;background:var(--panel);padding:6px 10px;white-space:nowrap}
+  .btn-split button.primary{background:var(--brand);color:#fff}
+  .btn-split button.primary:hover{background:var(--brand2)}
+  .btn-split button:not(:last-child){border-right:1px solid rgba(0,0,0,.08)}
+  .btn-split button:first-child{border-radius:8px 0 0 8px}
+  .btn-split button:last-child{border-radius:0 8px 8px 0}
+  .btn-split .dropdown-menu{position:absolute;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.1);min-width:170px;z-index:10;display:none;padding:4px 0}
+  .btn-split .dropdown-menu.show{display:block}
+  .btn-split .dropdown-item{padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
+  .btn-split .dropdown-item:hover{background:#f2f6ff;color:var(--brand2)}
+</style>
+</head>
+<body class="auth-pending">
+<!-- 登录遮罩：共享访问密码（同级运营人共用同一密码；各浏览器独立登录、互不顶号） -->
+<div class="modal-mask" id="authMask">
+  <div class="modal" style="max-width:360px;text-align:center">
+    <h3>登录</h3>
+    <p class="sub">培训通知助手 · 请输入共享访问密码</p>
+    <input type="password" id="authPwd" placeholder="访问密码" style="width:100%;padding:9px;margin:12px 0;box-sizing:border-box;border:1px solid #d0d5dd;border-radius:6px">
+    <div id="authErr" style="color:#e5484d;font-size:13px;min-height:18px;margin-bottom:6px"></div>
+    <button class="primary" id="authSubmit" style="width:100%;padding:10px">进入</button>
+    <p class="sub" style="margin-top:10px;font-size:12px">未配置服务端密码时本地调试免登录</p>
+  </div>
+</div>
+<header>
+  <h1>培训通知助手</h1>
+  <div class="breadcrumb" id="breadcrumb">项目列表</div>
+  <div class="header-actions" id="headerActions"></div>
+  <span class="save-tip" id="saveTip"></span>
+</header>
+<div class="layout">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main" id="app"><div class="empty">加载中…</div></main>
+</div>
+
+<!-- 群通讯录弹窗 -->
+<div class="modal-mask" id="groupsModal">
+  <div class="modal wide">
+    <span class="close-x" data-close="groupsModal">×</span>
+    <h3>群通讯录（全局）</h3>
+    <div class="card" style="margin:10px 0;background:#fafbfc">
+      <h4>运营人提醒群（节点提醒推送通道）</h4>
+      <p class="hint">提前1天与发送前2小时，系统会向该群推送「节点确认」与「测试版通知」。可留空：留空时仅页面内「推送概览 → 临近节点」看板生效，不发企微消息。建议建一个仅含你与领导的群后填入 webhook。</p>
+      <div class="row">
+        <div class="field" style="flex:1;min-width:280px"><label>提醒群 Webhook URL</label><input type="text" id="reminderWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div>
+        <button class="primary" id="btnSaveReminder" style="margin-bottom:8px">保存</button>
+      </div>
+      <div id="reminderStatus" class="sub"></div>
+    </div>
+    <div class="row">
+      <div class="field search-wrap"><span class="search-icon">🔍</span><input type="search" id="gSearch" placeholder="搜索群名称 / Webhook"></div>
+      <div class="field" style="max-width:140px"><select id="gFilter"><option value="">全部类型</option><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select></div>
+    </div>
+    <div id="groupsList" style="margin:10px 0"></div>
+    <div class="card" style="margin:10px 0;background:#fafbfc">
+      <h4>添加群</h4>
+      <div class="row">
+        <div class="field"><label>群名称</label><input type="text" id="gName" placeholder="如：A+经理人学员群"></div>
+        <div class="field" style="max-width:160px"><label>类型</label>
+          <select id="gType"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select>
+        </div>
+        <div class="field"><label>Webhook URL</label><input type="text" id="gUrl" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div>
+        <button class="primary" id="btnAddGroup" style="margin-bottom:8px">添加</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 关联群选择弹窗 -->
+<div class="modal-mask" id="assocPickerModal">
+  <div class="modal wide">
+    <span class="close-x" data-close="assocPickerModal">×</span>
+    <h3>选择项目关联群</h3>
+    <p class="sub">从全局通讯录中选择本项目常用的群，写通知时只显示这些群。</p>
+    <div class="row">
+      <div class="field search-wrap"><span class="search-icon">🔍</span><input type="search" id="assocPickerSearch" placeholder="搜索群名称"></div>
+      <div class="field" style="max-width:140px"><select id="assocPickerFilter"><option value="">全部类型</option><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select></div>
+    </div>
+    <div id="assocPickerList" style="margin:10px 0;max-height:360px;overflow:auto"></div>
+    <div class="actions" style="justify-content:flex-end">
+      <button class="ghost" data-close="assocPickerModal">取消</button>
+      <button class="primary" id="btnConfirmAssoc">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 预览弹窗 -->
+<div class="modal-mask" id="previewModal">
+  <div class="modal">
+    <span class="close-x" data-close="previewModal">×</span>
+    <h3 id="previewTitle">发送预览</h3>
+    <div class="wx-preview" id="previewBody"></div>
+  </div>
+</div>
+
+<!-- 测试发送弹窗 -->
+<div class="modal-mask" id="testSendModal">
+  <div class="modal">
+    <span class="close-x" data-close="testSendModal">×</span>
+    <h3 id="testSendModalTitle">发送至测试群</h3>
+    <p class="sub">选择测试群，将当前受众版本的文案发送到测试群（自动加【测试】前缀）。</p>
+    <div id="testGroupList" style="margin:10px 0"></div>
+    <div class="actions" style="justify-content:flex-end">
+      <button class="ghost" data-close="testSendModal">取消</button>
+      <button class="primary" id="btnDoTestSend">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- 分类管理弹窗 -->
+<div class="modal-mask" id="categoryModal">
+  <div class="modal">
+    <span class="close-x" data-close="categoryModal">×</span>
+    <h3>管理分类</h3>
+    <p class="sub">可新增分类，或删除未使用的分类。</p>
+    <div id="categoryList" style="margin:10px 0"></div>
+    <div class="row">
+      <div class="field"><input type="text" id="newCategoryName" placeholder="新分类名称"></div>
+      <button class="primary" id="btnAddCategory">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 文案模板管理弹窗 -->
+<div class="modal-mask" id="templateModal">
+  <div class="modal wide tpl-modal">
+    <div class="modal-header-sticky">
+      <span class="close-x" data-close="templateModal">×</span>
+      <h3>文案模板管理</h3>
+      <p class="sub">按「通知节点 + 群类别」管理默认文案。在此处更新的模板会立即在通知编辑区生效；已使用旧模板的通知会显示黄字提醒。</p>
+      <div class="row">
+        <div class="field" style="max-width:160px"><label>节点筛选</label><select id="tplFilterNode"><option value="">全部节点</option><option value="start">启动通知</option><option value="midway">中程提醒</option><option value="due">截止提醒</option><option value="post">截止后通晒</option></select></div>
+        <div class="field" style="max-width:140px"><label>群类别筛选</label><select id="tplFilterAud"><option value="">全部类别</option><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option></select></div>
+        <div class="field" style="max-width:220px"><label>搜索</label><input type="search" id="tplSearch" placeholder="模板名称 / 内容"></div>
+        <button class="primary" id="btnNewTemplate" style="margin-bottom:8px">新建模板</button>
+      </div>
+    </div>
+    <div class="modal-scroll-body">
+      <div id="templateList" style="margin:10px 0"></div>
+      <div class="card" id="tplEditor" style="display:none;margin:10px 0;background:#fafbfc">
+        <div class="tpl-editor-sticky">
+          <h4 id="tplEditorTitle">新建模板</h4>
+          <div class="row">
+            <div class="field"><label>模板名称</label><input type="text" id="tplLabel" placeholder="如：学习阶段启动通知（学员群）"></div>
+            <div class="field" style="max-width:160px"><label>通知节点</label><select id="tplNode"><option value="start">启动通知</option><option value="midway">中程提醒</option><option value="due">截止提醒</option><option value="post">截止后通晒</option></select></div>
+            <div class="field" style="max-width:140px"><label>群类别</label><select id="tplAudience"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option></select></div>
+          </div>
+          <div class="field"><label>模板内容</label>
+            <div style="display:flex;gap:6px;margin:4px 0;align-items:center">
+              <div class="field-dropdown" id="tplFieldDropdown">
+                <button class="ghost mini-btn" type="button">插入字段 ▼</button>
+                <div class="menu" id="tplFieldMenu">
+                  <div class="menu-group">项目信息</div>
+                  <div class="menu-item tpl-var" data-var="{{项目名}}">项目名 <code style="color:var(--sub)">{{项目名}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{负责人}}">负责人 <code style="color:var(--sub)">{{负责人}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{培训目的}}">培训目的 <code style="color:var(--sub)">{{培训目的}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{整体安排}}">整体安排 <code style="color:var(--sub)">{{整体安排}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{项目开始}}">项目开始 <code style="color:var(--sub)">{{项目开始}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{项目结束}}">项目结束 <code style="color:var(--sub)">{{项目结束}}</code></div>
+                  <div class="menu-group">阶段信息</div>
+                  <div class="menu-item tpl-var" data-var="{{阶段名}}">阶段名 <code style="color:var(--sub)">{{阶段名}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{阶段开始时间}}">阶段开始时间 <code style="color:var(--sub)">{{阶段开始时间}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{阶段结束时间}}">阶段结束时间 <code style="color:var(--sub)">{{阶段结束时间}}</code></div>
+                  <div class="menu-item tpl-var" data-var="{{地点/链接}}">地点/链接 <code style="color:var(--sub)">{{地点/链接}}</code></div>
+                  <div class="menu-group">任务信息</div>
+                  <div class="menu-item tpl-var" data-var="{{任务列表}}">任务列表 <code style="color:var(--sub)">{{任务列表}}</code></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <textarea id="tplContent" rows="8" placeholder="在此编写模板文案，支持 markdown_v2 与上方动态字段"></textarea>
+        <div class="actions">
+          <button class="ghost" id="btnTplPreview">预览</button>
+          <button class="primary" id="btnTplSave">保存模板</button>
+          <button class="ghost" id="btnTplCancel">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 模板选择弹窗 -->
+<div class="modal-mask" id="templatePickerModal">
+  <div class="modal">
+    <span class="close-x" data-close="templatePickerModal">×</span>
+    <h3>选择要应用的模板</h3>
+    <div class="row" style="align-items:flex-end;margin:10px 0">
+      <div class="field" style="max-width:160px"><label>通知节点</label>
+        <select id="tplPickNode"><option value="start">启动通知</option><option value="midway">中程提醒</option><option value="due">截止提醒</option><option value="post">截止后通晒</option></select>
+      </div>
+      <div class="field" style="max-width:140px"><label>群类别</label>
+        <select id="tplPickAud"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option></select>
+      </div>
+    </div>
+    <p class="sub">默认展示当前通知节点和群类别，可切换筛选；应用后会将通知节点更新为模板所属节点。</p>
+    <div id="templatePickerList" style="margin:10px 0"></div>
+  </div>
+</div>
+
+<!-- 批量改时间弹窗 -->
+<div class="modal-mask" id="bulkTimeModal">
+  <div class="modal">
+    <span class="close-x" data-close="bulkTimeModal">×</span>
+    <h3>批量修改发送时间</h3>
+    <p class="sub" id="bulkTimeSub">已选 0 条受众通知</p>
+    <div style="margin:12px 0">
+      <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer"><input type="radio" name="bulkTimeMode" value="offset" checked> 相对偏移</label>
+      <div class="row" style="margin-left:22px;align-items:flex-end">
+        <div class="field" style="max-width:90px"><input type="number" id="bulkTimeOffset" value="0" step="1"></div>
+        <div class="field" style="max-width:90px"><select id="bulkTimeUnit"><option value="day">天</option><option value="hour">小时</option><option value="minute">分钟</option></select></div>
+        <span class="sub">正数=延后，负数=提前</span>
+      </div>
+      <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer"><input type="radio" name="bulkTimeMode" value="absolute"> 统一设为绝对时间</label>
+      <div class="row" style="margin-left:22px;align-items:flex-end">
+        <div class="field" style="max-width:180px"><input type="datetime-local" id="bulkTimeAbsolute"></div>
+      </div>
+    </div>
+    <p class="sub" id="bulkTimePreview">将影响 0 条已设时间的通知</p>
+    <div class="actions" style="justify-content:flex-end">
+      <button class="ghost" data-close="bulkTimeModal">取消</button>
+      <button class="primary" id="btnBulkTimeApply">应用</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量生成通知弹窗 -->
+<div class="modal-mask" id="bulkGenerateModal">
+  <div class="modal wide">
+    <span class="close-x" data-close="bulkGenerateModal">×</span>
+    <h3>批量生成阶段通知</h3>
+    <p class="sub">为选中的每个阶段生成一条通知，适合新项目快速建通知或滚动班级批量套模板。</p>
+    <div class="row" style="align-items:flex-start;gap:16px;margin:12px 0">
+      <div class="field" style="flex:1">
+        <label>目标阶段（可多选）</label>
+        <p class="hint">将依次为勾选阶段各生成 1 条通知</p>
+        <div id="bulkGenStages" style="max-height:160px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff"></div>
+      </div>
+      <div style="flex:1">
+        <div class="field" style="margin-bottom:10px">
+          <label>生成来源</label>
+          <select id="bulkGenSource"><option value="template">按文案模板</option><option value="copy">复制现有通知</option></select>
+        </div>
+        <div id="bulkGenSourceBox">
+          <div class="field" id="bulkGenTplBox">
+            <label>选择模板</label>
+            <select id="bulkGenTemplate"></select>
+            <p class="hint">将只启用该模板对应的受众群，其他受众保持停用</p>
+          </div>
+          <div class="field" id="bulkGenCopyBox" style="display:none">
+            <label>复制来源</label>
+            <select id="bulkGenCopyFrom"></select>
+            <p class="hint">复制该通知的文案、节点与受众设置</p>
+          </div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label>发送时间规则</label>
+          <select id="bulkGenTimeRule"><option value="none">不设定</option><option value="beforeStart">阶段开始前</option><option value="afterStart">阶段开始后</option><option value="beforeEnd">阶段结束前</option><option value="afterEnd">阶段结束后</option></select>
+        </div>
+        <div class="row" id="bulkGenOffsetRow" style="align-items:flex-end;margin-top:8px;display:none">
+          <div class="field" style="max-width:90px"><input type="number" id="bulkGenOffset" value="1" min="0" step="1"></div>
+          <div class="field" style="max-width:90px"><select id="bulkGenUnit"><option value="day">天</option><option value="hour">小时</option></select></div>
+          <span class="sub">偏移量</span>
+        </div>
+      </div>
+    </div>
+    <div class="actions" style="justify-content:flex-end;margin-top:16px">
+      <button class="ghost" data-close="bulkGenerateModal">取消</button>
+      <button class="primary" id="btnBulkGenApply">生成</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  const SERVER_MODE = location.protocol !== 'file:' && (location.port === '8788' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+  const GROUPS_LABEL = {student:'学员群', lecturer:'讲师群', manager:'管理群', test:'测试群'};
+  const AUDIENCES = ['student','lecturer','manager'];
+  const NODE_LABEL = {start:'启动通知', midway:'中程提醒', due:'截止提醒', post:'截止后通晒'};
+  // ===== 轻量登录：共享密码 + 无状态 token =====
+  const TN_AUTH_TOKEN_KEY = 'tn_v10_auth_token';
+  function getAuthToken(){ return localStorage.getItem(TN_AUTH_TOKEN_KEY) || ''; }
+  function setAuthToken(t){ if(t) localStorage.setItem(TN_AUTH_TOKEN_KEY, t); else localStorage.removeItem(TN_AUTH_TOKEN_KEY); }
+  // 代理 window.fetch：自动注入 x-auth-token（受保护路由需登录，未配置密码则放行）
+  (function patchFetch(){
+    const _orig = window.fetch.bind(window);
+    window.fetch = function(url, opts){
+      opts = opts || {};
+      const headers = new Headers(opts.headers || {});
+      const tk = getAuthToken();
+      if(tk) headers.set('x-auth-token', tk);
+      return _orig(url, Object.assign({}, opts, {headers: headers}));
+    };
+  })();
+
+  // ===== Supabase 直连（静态托管 / EdgeOne 版，与后端 dataStore.js 共用 tn_kv schema） =====
+  // 关键约定：key=data 主键（项目=project:<id> / 模板=templates / 群=global_groups / 设置=app_settings），data=JSON，updated_at 时间戳。
+  // _sb 为 null 时所有数据函数自动降级 localStorage —— 绝不丢数据。
+  const SB_URL = 'https://qyxxchifknfmvvyjvoue.supabase.co';
+  const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF5eHhjaGlma25mbXZ2eWp2b3VlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwMzA5MjEsImV4cCI6MjEwMjYwNjkyMX0.Af81xF1lj4SvYVmn8Lxq1tepBiWgZlugB7QYyhI-ULc';
+  let _sb = null;
+  async function initSupabase(){
+    if(SERVER_MODE) return;                       // 本地服务走后端，不直连
+    if(_sb) return;
+    try{
+      if(typeof window.supabase === 'undefined'){ console.warn('[cloud] supabase-js 未加载，回退 localStorage'); return; }
+      _sb = window.supabase.createClient(SB_URL, SB_ANON, { auth:{ persistSession:false } });
+      // 轻量连通性探测：读一次 tn_kv，失败则 _sb 置空 → 自动降级 localStorage
+      const { error } = await _sb.from('tn_kv').select('key').limit(1);
+      if(error){ console.warn('[cloud] 云端不可达，回退 localStorage：', error.message); _sb=null; }
+    }catch(e){ console.warn('[cloud] 初始化失败，回退 localStorage：', e.message); _sb=null; }
+  }
+  async function cloudGet(key){
+    if(!_sb) return undefined;
+    try{ const { data, error } = await _sb.from('tn_kv').select('data').eq('key',key).single();
+      if(error) return undefined; return data ? data.data : undefined; }
+    catch(e){ return undefined; }
+  }
+  async function cloudSet(key, val){
+    if(!_sb) return false;
+    try{ const { error } = await _sb.from('tn_kv').upsert({ key, data:val, updated_at:new Date().toISOString() });
+      if(error){ console.error('[cloud] set', key, error.message); return false; } return true; }
+    catch(e){ return false; }
+  }
+  // 字段权威性保护：合并内存 project 与 cloud 真源。
+  // 问题：前端 silentSave 用内存 stale project 写云端时，会覆盖云端 Action 写入的 sentAt/sentAudiences/
+  //       reminder1dSentAt/reminder2hSentAt 这类"不该被 UI 编辑回退"的字段。
+  // 策略：以 cloud 为准保留这些字段，其他字段用本地内存（用户编辑的新值）。
+  function mergeCloudAuthorityFields(local, cloud){
+    if(!cloud || typeof cloud !== 'object' || Array.isArray(cloud)) return local;
+    const out = JSON.parse(JSON.stringify(local||{}));
+    if(!out.stages) return out;
+    const cloudStages = (cloud.stages||[]);
+    out.stages.forEach((s, si)=>{
+      const cs = cloudStages.find(x=>x && x.id && s && s.id && x.id===s.id);
+      if(!cs || !s.notifications) return;
+      s.notifications.forEach((n, ni)=>{
+        const cn = (cs.notifications||[]).find(x=>x && x.id && n && n.id && x.id===n.id);
+        if(!cn) return;
+        // "云端真源优先" 字段白名单：sentAt / sentAudiences / reminder1dSentAt / reminder2hSentAt / status（仅 sent 状态）
+        if(cn.sentAt) n.sentAt = cn.sentAt;
+        if(Array.isArray(cn.sentAudiences) && cn.sentAudiences.length){
+          n.sentAudiences = Array.from(new Set([].concat(n.sentAudiences||[], cn.sentAudiences)));
+        }
+        if(cn.reminder1dSentAt) n.reminder1dSentAt = cn.reminder1dSentAt;
+        if(cn.reminder2hSentAt) n.reminder2hSentAt = cn.reminder2hSentAt;
+        // status 只在云端是 sent 时覆盖本地 draft（避免本地手动重置被吞）
+        if(cn.status === 'sent' && n.status !== 'sent'){
+          n.status = 'sent';
+        }
+      });
+    });
+    return out;
+  }
+  // silentSave 调用前的"取最新云端" — 以云端真源保护关键字段不丢
+  async function fetchCloudMerge(local){
+    if(!_sb || !currentProjectId) return local;
+    try{
+      const cloud = await cloudGet('project:'+currentProjectId);
+      return mergeCloudAuthorityFields(local, cloud);
+    }catch(e){ return local; }
+  }
+  async function cloudDelete(key){
+    if(!_sb) return false;
+    try{ const { error } = await _sb.from('tn_kv').delete().eq('key',key); if(error) return false; return true; }
+    catch(e){ return false; }
+  }
+  async function cloudListProjects(){
+    if(!_sb) return [];
+    try{ const { data, error } = await _sb.from('tn_kv').select('key,data').like('key','project:%');
+      if(error) return []; return (data||[]).map(r=>({id:String(r.key).replace(/^project:/,''), ...(r.data||{})})); }
+    catch(e){ return []; }
+  }
+  async function cloudUpload(dataUrl){
+    if(!_sb) return { success:false, error:'未连接云端' };
+    try{
+      const m = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/); if(!m) return {success:false,error:'格式不支持'};
+      const mime=m[1]; const bin=atob(m[2]); const len=bin.length; const bytes=new Uint8Array(len);
+      for(let i=0;i<len;i++) bytes[i]=bin.charCodeAt(i);
+      const ext=(mime.split('/')[1]||'png').replace('jpeg','jpg');
+      const fileName=`${Date.now()}-${Math.random().toString(36).slice(2,8)}.${ext}`;
+      const { error } = await _sb.storage.from('tn-images').upload(fileName, bytes, { contentType:mime, upsert:true });
+      if(error) return {success:false, error:error.message};
+      const { data:pub } = _sb.storage.from('tn-images').getPublicUrl(fileName);
+      return { success:true, url:pub.publicUrl, mime };
+    }catch(e){ return {success:false, error:e.message}; }
+  }
+  // 手动发送：调用 Supabase Edge Function（云端转发企微 webhook，规避浏览器 CORS / 密钥暴露）。
+  // Edge Function 未部署时降级：用 fetch mode='no-cors' 直接发给企微 webhook——
+  // 浏览器无法读取响应（opaque），但请求**会送达**企微服务器，规避 CORS 阻断。
+  // status 始终以"已尝试发送"标记，并提示用户注意没有真实送达回执。
+  async function cloudSend(items, testMode){
+    if(!_sb) return { success:false, error:'未连接云端' };
+    // 1) 优先走 Edge Function（拿到真实送达回执 + 图片分段）
+    try{
+      const { data, error } = await _sb.functions.invoke('send-v10', { body:{ items, testMode } });
+      if(!error && data) return data;
+    }catch(e){ /* 降级到 no-cors 直发 */ }
+    // 2) 降级：用 fetch no-cors 直发 webhook。markdown 消息体直接转发。
+    const results = [];
+    for(const it of (items||[])){
+      try{
+        const body = JSON.stringify({ msgtype:'markdown', markdown:{ content: (testMode?'【测试】':'') + (it.content||'') } });
+        await fetch(it.webhookUrl, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body });
+        // no-cors 模式下响应 opaque，无法判断 errcode；如有图片也不再单独发（避免二次开销/重复）。按"已发出"处理。
+        results.push({ groupName: it.groupName, success:true, error:null, warning:'no-cors 降级：未取到企微回执，请到群里确认收到。' });
+      }catch(ee){
+        results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee) });
+      }
+    }
+    return { success: results.every(r=>r.success), results, fallback:'no-cors' };
+  }
+
+  async function setupAuth(){
+    const mask = document.getElementById('authMask');
+    const pwd = document.getElementById('authPwd');
+    const err = document.getElementById('authErr');
+    const submit = document.getElementById('authSubmit');
+    if(!mask) return true;
+
+    // 非 SERVER_MODE（静态托管 / EdgeOne）：先初始化 Supabase 直连，
+    // 成功则走云端数据层（数据真源与本地 8788 一致）；失败自动降级 localStorage（绝不丢数据）。
+    if(!SERVER_MODE){
+      await initSupabase();
+      showReady();
+      return true;
+    }
+
+    function showPending(msg, offline){
+      document.body.classList.add('auth-pending');
+      if(offline) document.body.classList.add('auth-offline'); else document.body.classList.remove('auth-offline');
+      mask.classList.add('show'); mask.style.display='';
+      if(msg){ err.textContent = msg; }
+      pwd.focus();
+    }
+    function showReady(){
+      document.body.classList.remove('auth-pending');
+      document.body.classList.remove('auth-offline');
+      mask.classList.remove('show'); mask.style.display='none';
+    }
+
+    // 等待登录成功的 Promise（init 据此阻塞业务初始化）
+    let loginResolve;
+    const loginPromise = new Promise(resolve=>{ loginResolve = resolve; });
+
+    async function bootBusiness(){
+      try{
+        await loadGlobalGroups();
+        await loadAppSettings();
+        await loadTemplates();
+        await seedDefaultTemplates();
+        await loadProjectList();
+        if(projects.length===0){
+          const id = await createProject();
+          if(id) await loadProjectList();
+        }
+        render();
+      }catch(e){ toast('业务数据加载失败'); }
+    }
+
+    async function doLogin(){
+      err.textContent = '';
+      try{
+        const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pwd.value})});
+        if(!r.ok){
+          err.textContent = '密码错误或服务端未启动';
+          return;
+        }
+        const j = await r.json();
+        if(j.success){
+          setAuthToken(j.token);
+          showReady();
+          toast('登录成功');
+          await bootBusiness();
+          if(loginResolve) loginResolve(true);
+        }
+        else { err.textContent = j.error || '登录失败'; }
+      }catch(e){
+        err.textContent = '无法连接服务端。请打开 http://localhost:8788/v10 后再登录（不要直接 file:// 打开本文件）';
+      }
+    }
+    submit.addEventListener('click', doLogin);
+    pwd.addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+
+    // 探测后端是否要求登录（未配密码则本地调试免登录，避免死锁）
+    let required = true;
+    let serverReachable = true;
+    try{
+      const r = await fetch('/api/auth-status');
+      if(r.ok){ const j = await r.json(); required = !!j.required; }
+      else { serverReachable = false; }
+    }catch(e){ serverReachable = false; }
+
+    if(!required){
+      // 未配密码（本地调试免登录）
+      showReady(); return true;
+    }
+    if(serverReachable && getAuthToken()){
+      // 已经有 token（持久化在 localStorage）— 自动放行
+      showReady(); return true;
+    }
+    if(!serverReachable){
+      // 服务端不可达：明确提示
+      document.body.classList.remove('auth-pending');
+      document.body.classList.add('auth-offline');
+      mask.classList.add('show'); mask.style.display='';
+      err.textContent = '无法连接 http://localhost:8788 服务端。请确认服务已启动后用 http://localhost:8788/v10 打开（不要用 file:// 直开本文件）。';
+      return false;
+    }
+    // required && serverReachable && !token：显示遮罩并等待登录
+    showPending();
+    return loginPromise;
+  }
+  // 文案模板（v10.2 起全局持久化，按 通知节点 + 群类别 组合）
+  let TEMPLATES = [];
+  async function loadTemplates(){
+    if(SERVER_MODE){
+      try{ const r=await fetch('/api/templates'); const j=await r.json(); TEMPLATES=j.templates||[]; }
+      catch(e){ TEMPLATES=[]; }
+    }else if(_sb){
+      const v = await cloudGet('templates'); TEMPLATES = Array.isArray(v)? v : [];
+    }else{
+      TEMPLATES = JSON.parse(localStorage.getItem('tn_v10_templates')||'[]');
+    }
+  }
+  async function saveTemplates(){
+    if(SERVER_MODE){
+      try{ await fetch('/api/templates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({templates:TEMPLATES})}); }
+      catch(e){ }
+    }else if(_sb){
+      await cloudSet('templates', TEMPLATES);
+    }else{
+      localStorage.setItem('tn_v10_templates', JSON.stringify(TEMPLATES));
+    }
+  }
+  async function seedDefaultTemplates(){
+    const defaultContent = `各位同学，大家好！\n\n**{{项目名}} · {{阶段名}}** 开始啦！\n\n**培训目的**\n{{培训目的}}\n\n**整体安排**\n{{整体安排}}\n\n**阶段安排**\n时间：{{阶段开始时间}} ~ {{阶段结束时间}}\n地点/链接：{{地点/链接}}\n\n**本阶段学习任务**\n{{任务列表}}\n\n过程中如有任何问题，可随时联系 {{负责人}}。`;
+    // 仅在没有任何模板时创建系统默认模板；已有模板（包括用户修改过的默认模板）不再覆盖
+    if(TEMPLATES.length===0){
+      TEMPLATES = [{
+        id: 'tpl-start-student-' + uid(),
+        label: '学习阶段启动通知（学员群）',
+        node: 'start',
+        audience: 'student',
+        content: defaultContent,
+        updatedAt: new Date().toISOString()
+      }];
+      await saveTemplates();
+    }
+  }
+  function getTemplates(node, audience){
+    return TEMPLATES.filter(t => (!node || t.node===node) && (!audience || t.audience===audience));
+  }
+  function getTemplateById(id){ return TEMPLATES.find(t=>t.id===id); }
+  function applyTemplateToAudience(n, aud, tpl){
+    const ac = n.audienceContent[aud];
+    ac.content = tpl.content;
+    ac.enabled = true;
+    ac.templateId = tpl.id;
+    ac.templateAppliedAt = new Date().toISOString();
+  }
+  function applyNodeTemplates(n, onlyEmpty){
+    AUDIENCES.forEach(a=>{
+      const list = getTemplates(n.node, a);
+      if(list.length===0) return;
+      const ac = n.audienceContent[a];
+      if(onlyEmpty && ac.content && ac.content.trim()) return;
+      applyTemplateToAudience(n, a, list[0]);
+    });
+  }
+  function isTemplateOutdated(ac){
+    if(!ac || !ac.templateId || !ac.templateAppliedAt) return null;
+    const t = getTemplateById(ac.templateId);
+    if(!t || !t.updatedAt) return null;
+    return new Date(t.updatedAt) > new Date(ac.templateAppliedAt) ? t : null;
+  }
+
+  let globalGroups = [];
+  let appSettings = { reminderWebhook: '' };
+  let projects = [];
+  let project = null;
+  let currentProjectId = null;
+  let view = 'list';
+  let homeSection = 'all'; // 'all' | 'overview' | category-name
+  let editSection = 'meta'; // 'meta' | 'parse' | 'overview' | 'notifs'
+  let saveTimer = null;
+  let activeAud = {};
+  let pendingTestNotification = null;
+  let pendingTestAudience = null;
+  let listSearch = '', listSort = 'startDesc', listYear = '';
+  let overviewPage = 1; // 全局推送概览分页
+
+  const $ = (s,el=document)=>el.querySelector(s);
+  const $$ = (s,el=document)=>Array.from(el.querySelectorAll(s));
+  const uid = ()=> 'id'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  const esc = (s)=> (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  // ---------- 数据 ----------
+  function emptyProject(){
+    return { projectName:'', startDate:'', endDate:'', purpose:'', owner:'', description:'', overallArrangement:'', category:'', associatedGroupIds:[], stages:[] };
+  }
+  function defaultAudienceConfig(){
+    return { enabled:false, content:'', inputMode:'template', templateId:'', templateAppliedAt:'', notifyAt:'', targetGroups:[], taskIds:[], taskOrder:[], autoSend:true };
+  }
+  function defaultNotification(){
+    return {
+      id:uid(), name:'', node:'start',
+      audienceContent:{ student:defaultAudienceConfig(), lecturer:defaultAudienceConfig(), manager:defaultAudienceConfig() },
+      status:'draft', sentAt:null, sendAttempts:0, sentAudiences:[]
+    };
+  }
+  function defaultTask(){ return { id:uid(), name:'', description:'', dueDate:'', attachments:[], collapsed:false }; }
+  function defaultAttachment(){ return { id:uid(), type:'link', name:'', url:'', linkText:'' }; }
+  function defaultStage(){ return { id:uid(), name:'', keywords:'', startDate:'', endDate:'', startTime:'', endTime:'', placeOrLink:'', tasks:[], notifications:[], collapsed:false }; }
+
+  // ---------- 全局通讯录 ----------
+  async function loadGlobalGroups(){
+    if(SERVER_MODE){
+      try{ const r=await fetch('/api/groups'); const j=await r.json(); globalGroups=j.groups||[]; }
+      catch(e){ globalGroups=[]; }
+    }else if(_sb){
+      const v = await cloudGet('global_groups'); globalGroups = Array.isArray(v)? v : [];
+    }else{
+      globalGroups = JSON.parse(localStorage.getItem('tn_v10_groups')||'[]');
+    }
+  }
+  async function saveGlobalGroups(){
+    if(SERVER_MODE){
+      try{ await fetch('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({groups:globalGroups})}); }
+      catch(e){}
+    }else if(_sb){
+      await cloudSet('global_groups', globalGroups);
+    }else{
+      localStorage.setItem('tn_v10_groups', JSON.stringify(globalGroups));
+    }
+  }
+  // ---------- 全局应用设置（提醒通道等） ----------
+  async function loadAppSettings(){
+    if(SERVER_MODE){
+      try{ const r=await fetch('/api/settings'); const j=await r.json(); appSettings=j.settings||{}; }
+      catch(e){ appSettings={}; }
+    }else if(_sb){
+      const v = await cloudGet('app_settings'); appSettings = (v && typeof v==='object')? v : {};
+    }else{
+      appSettings = JSON.parse(localStorage.getItem('tn_v10_settings')||'{}');
+    }
+  }
+  async function saveAppSettings(){
+    if(SERVER_MODE){
+      try{ await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(appSettings)}); }
+      catch(e){}
+    }else if(_sb){
+      await cloudSet('app_settings', appSettings);
+    }else{
+      localStorage.setItem('tn_v10_settings', JSON.stringify(appSettings));
+    }
+  }
+  function migrateProjectGroups(){
+    // 兼容旧数据：项目里的 groups 迁移到全局通讯录并关联；迁移后立即保存项目，避免每次打开都重复迁移
+    if(!project) return;
+    const legacy = (project.groups || []).filter(g=>g && g.id);
+    if(legacy.length===0) return;
+    const mapType = (cat)=>{
+      if(!cat) return 'student';
+      const c = String(cat);
+      if(c.includes('学员')) return 'student';
+      if(c.includes('讲师')) return 'lecturer';
+      if(c.includes('管理') || c.includes('汇报')) return 'manager';
+      if(c.includes('测试')) return 'test';
+      return c;
+    };
+    const addedIds=[];
+    for(const g of legacy){
+      const exists = globalGroups.find(x=>x.id===g.id);
+      const type = mapType(g.category || g.type) || 'student';
+      if(!exists && g.name && g.webhookUrl){
+        globalGroups.push({id:g.id, name:g.name, type:type, webhookUrl:g.webhookUrl, pinned:false});
+        addedIds.push(g.id);
+      }
+      if(exists && !addedIds.includes(g.id)) addedIds.push(g.id);
+    }
+    project.associatedGroupIds = Array.from(new Set((project.associatedGroupIds||[]).concat(addedIds)));
+    project.groups = [];
+  }
+
+  // ---------- 项目读写 ----------
+  async function loadProjectList(){
+    if(SERVER_MODE){
+      try{ const r=await fetch('/api/projects'); const j=await r.json(); projects=j.projects||[]; }
+      catch(e){ projects=[]; }
+    }else if(_sb){
+      projects = await cloudListProjects();
+    }else{
+      const list = JSON.parse(localStorage.getItem('tn_v10_projects')||'[]');
+      projects = list.map(meta=>{
+        try{ return JSON.parse(localStorage.getItem('tn_v10_'+meta.id)||'{}'); }
+        catch(e){ return null; }
+      }).filter(Boolean);
+    }
+  }
+  async function loadProject(id){
+    currentProjectId = id;
+    if(SERVER_MODE){
+      try{
+        const r = await fetch('/api/project/'+id);
+        const j = await r.json();
+        project = j.project && Object.keys(j.project).length ? j.project : emptyProject();
+      }catch(e){ project = emptyProject(); }
+    }else if(_sb){
+      const v = await cloudGet('project:'+id);
+      project = (v && Object.keys(v).length) ? v : emptyProject();
+    }else{
+      try{ project = JSON.parse(localStorage.getItem('tn_v10_'+id)||'null') || emptyProject(); }
+      catch(e){ project = emptyProject(); }
+    }
+    const hadLegacy = (project.groups||[]).length > 0;
+    migrateProjectGroups();
+    if(hadLegacy){
+      await saveGlobalGroups();
+      await silentSave();
+    }
+    ensureStructures();
+  }
+  function ensureStructures(){
+    if(!project) return;
+    if(!project.associatedGroupIds) project.associatedGroupIds=[];
+    if(!project.stages) project.stages=[];
+    project.stages.forEach(s=>{
+      if(!s.tasks) s.tasks=[];
+      if(!s.notifications) s.notifications=[];
+      // 任务附件旧字段迁移：{url,title} -> {id,type,name,url,linkText}
+      s.tasks.forEach(t=>{
+        if(!t.attachments) t.attachments=[];
+        t.attachments = t.attachments.map(a=>{
+          if(a.type) return a;
+          return { id:a.id||uid(), type:'link', name:a.title||'', url:a.url||'', linkText:'' };
+        });
+      });
+      // 阶段旧字段迁移：trainingType/meetingLink/venue -> placeOrLink
+      if(s.placeOrLink===undefined){
+        if(s.trainingType==='online' && s.meetingLink) s.placeOrLink = s.meetingLink;
+        else if(s.trainingType==='offline' && s.venue) s.placeOrLink = s.venue;
+        else s.placeOrLink = '';
+      }
+      delete s.trainingType; delete s.meetingLink; delete s.venue;
+      s.notifications.forEach(n=>{
+        if(!n.audienceContent) n.audienceContent={ student:{enabled:false,content:'',templateId:'',templateAppliedAt:''}, lecturer:{enabled:false,content:'',templateId:'',templateAppliedAt:''}, manager:{enabled:false,content:'',templateId:'',templateAppliedAt:''} };
+        AUDIENCES.forEach(a=>{
+          if(!n.audienceContent[a]) n.audienceContent[a]={enabled:false,content:'',templateId:'',templateAppliedAt:''};
+          const ac = n.audienceContent[a];
+          if(ac.templateId===undefined) ac.templateId='';
+          if(ac.templateAppliedAt===undefined) ac.templateAppliedAt='';
+          if(ac.inputMode===undefined) ac.inputMode='template';
+          if(ac.targetGroups===undefined) ac.targetGroups = (n.targetGroups && n.targetGroups[a]) ? n.targetGroups[a].slice() : [];
+          if(ac.taskIds===undefined) ac.taskIds = n.taskIds ? n.taskIds.slice() : [];
+          if(ac.taskOrder===undefined) ac.taskOrder = n.taskOrder ? n.taskOrder.slice() : [];
+          if(ac.notifyAt===undefined) ac.notifyAt = n.notifyAt || '';
+          if(ac.autoSend===undefined) ac.autoSend = n.autoSend !== undefined ? n.autoSend : true;
+        });
+        // 迁移后移除旧字段
+        delete n.targetGroups;
+        delete n.taskIds;
+        delete n.taskOrder;
+        delete n.notifyAt;
+        delete n.autoSend;
+        if(!n.sentAudiences) n.sentAudiences=[];
+      });
+    });
+  }
+  async function createProject(){
+    const id = 'p'+Date.now();
+    const p = emptyProject(); p.projectName='未命名项目'; p.createdAt = new Date().toISOString();
+    if(SERVER_MODE){
+      try{ await fetch('/api/project/'+id, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(p)}); }
+      catch(e){ toast('创建失败'); return null; }
+    }else if(_sb){
+      await cloudSet('project:'+id, p);
+    }else{
+      localStorage.setItem('tn_v10_'+id, JSON.stringify(p));
+      const list = JSON.parse(localStorage.getItem('tn_v10_projects')||'[]');
+      list.push({id, name:p.projectName, updatedAt:p.createdAt, startDate:'', endDate:'', owner:'', category:'', totalStages:0});
+      localStorage.setItem('tn_v10_projects', JSON.stringify(list));
+    }
+    await loadProjectList();
+    return id;
+  }
+  async function deleteProject(id){
+    if(!confirm('确认删除该项目？数据不可恢复。')) return;
+    // 乐观删除：先从内存移除，立刻 render()，再后台 DELETE（云端/后端）
+    projects = (projects || []).filter(p => p.id !== id);
+    if(!SERVER_MODE && !_sb){
+      try{ localStorage.removeItem('tn_v10_'+id); }catch(e){}
+      try{
+        const list = JSON.parse(localStorage.getItem('tn_v10_projects')||'[]').filter(x=>x.id!==id);
+        localStorage.setItem('tn_v10_projects', JSON.stringify(list));
+      }catch(e){}
+    }
+    render();
+    if(SERVER_MODE){
+      try{
+        const r = await fetch('/api/project/'+id, {method:'DELETE'});
+        if(!r.ok) throw new Error('HTTP '+r.status);
+      }catch(e){
+        toast('删除失败：'+e.message, {tone:'warn'});
+        await loadProjectList(); render();
+      }
+    }else if(_sb){
+      const ok = await cloudDelete('project:'+id);
+      if(!ok){
+        toast('删除失败', {tone:'warn'});
+        await loadProjectList(); render();
+      }
+    }
+  }
+  function scheduleAutoSave(){
+    const tip = $('#saveTip');
+    if(tip) tip.textContent = '编辑中…';
+    if(saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(silentSave, 600);
+  }
+  // 输入元素失焦时立即保存（防止 1 秒 debounce 内切走焦点导致 silentSave 不跑）
+  function flushAutoSave(){
+    if(saveTimer){ clearTimeout(saveTimer); saveTimer = null; }
+    return silentSave();
+  }
+  async function silentSave(){
+    if(!project || !currentProjectId) return;
+    project.updatedAt = new Date().toISOString();
+    // 同步内存里 projects[] 数组（推送概览 buildOverviewRows 优先从这里取最新数据）——
+    // 这样当前页面改完设置 → render() 即可看到新值，不用切页/刷新。
+    const syncProjects = ()=>{
+      if(!projects) projects = [];
+      const idx = projects.findIndex(p=>p.id===currentProjectId);
+      // 深拷贝（JSON.parse/stringify）防止 project 后续修改反向污染 projects[]
+      const snapshot = JSON.parse(JSON.stringify(project));
+      if(idx >= 0) projects[idx] = snapshot;
+      else projects.push(snapshot);
+    };
+    if(SERVER_MODE){
+      try{
+        // 写前先拉服务端权威字段（scheduler 也会写 sentAt/sentAudiences），merge 后再写
+        let merged = project;
+        try{
+          const rr = await fetch('/api/project/'+currentProjectId);
+          if(rr.ok){
+            const jj = await rr.json();
+            if(jj.project) merged = mergeCloudAuthorityFields(project, jj.project);
+          }
+        }catch(e){}
+        await fetch('/api/project/'+currentProjectId, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(merged)});
+        project = merged;
+        syncProjects();
+        const tip=$('#saveTip'); if(tip) tip.textContent = '已自动保存 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        // 保存成功后**不要立即重渲染**——会打断用户在 textarea / input 中输入（光标丢失）。
+        // 仅当焦点不在表单元素上时才轻量 render，让"发送时间/状态"等列更新。
+        const ae = document.activeElement;
+        const inForm = ae && (
+              ae.tagName === 'TEXTAREA'
+              || (ae.tagName === 'INPUT' && !['button','submit','checkbox','radio','file'].includes(ae.type))
+            );
+        if(!inForm) render();
+      }catch(e){ const tip=$('#saveTip'); if(tip) tip.textContent = '保存失败：'+e.message; toast('保存失败，请检查登录态或服务端', {tone:'warn'}); }
+    }else if(_sb){
+      // 写云端前先拉一次最新 cloud，用 mergeCloudAuthorityFields 把 Action/scheduler 写的
+      // sentAt/sentAudiences/reminder1dSentAt/reminder2hSentAt/sent 状态保留下来——避免前端
+      // silentSave 把内存 stale project 写到云端、覆盖掉 scheduler/Action 的最新写入。
+      let merged = project;
+      try{ merged = await fetchCloudMerge(project); }catch(e){}
+      await cloudSet('project:'+currentProjectId, merged);
+      // 把 merged 同步回内存，保证后续编辑/渲染不再丢失云端权威字段
+      try{
+        const idx = (projects||[]).findIndex(p=>p.id===currentProjectId);
+        if(idx>=0) projects[idx] = JSON.parse(JSON.stringify(merged));
+      }catch(e){}
+      project = merged;
+      syncProjects();
+      const tip=$('#saveTip'); if(tip) tip.textContent = '已自动保存 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const ae = document.activeElement;
+      const inForm = ae && (
+            ae.tagName === 'TEXTAREA'
+            || (ae.tagName === 'INPUT' && !['button','submit','checkbox','radio','file'].includes(ae.type))
+          );
+      if(!inForm) render();
+    }else{
+      localStorage.setItem('tn_v10_'+currentProjectId, JSON.stringify(project));
+      let list = JSON.parse(localStorage.getItem('tn_v10_projects')||'[]');
+      const idx = list.findIndex(x=>x.id===currentProjectId);
+      const meta = {id:currentProjectId, name:project.projectName||'未命名项目', updatedAt:project.updatedAt, startDate:project.startDate, endDate:project.endDate, owner:project.owner, category:project.category, totalStages:project.stages.length};
+      if(idx>=0) list[idx]=meta; else list.push(meta);
+      localStorage.setItem('tn_v10_projects', JSON.stringify(list));
+      syncProjects();
+      const tip=$('#saveTip'); if(tip) tip.textContent = '已自动保存 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      // 同上：仅焦点不在表单时 render
+      const ae = document.activeElement;
+      const inForm = ae && (
+            ae.tagName === 'TEXTAREA'
+            || (ae.tagName === 'INPUT' && !['button','submit','checkbox','radio','file'].includes(ae.type))
+          );
+      if(!inForm) render();
+    }
+  }
+
+  // ---------- 视图切换 ----------
+  function setView(v, pid){
+    view = v;
+    if(v==='edit'){ editSection='meta'; loadProject(pid).then(()=>{ render(); }); }
+    else { homeSection='all'; loadProjectList().then(()=>{ render(); }); }
+  }
+  function setHomeSection(s){ homeSection=s; render(); }
+  function setEditSection(s){ editSection=s; render(); }
+
+  // 推送概览实时轮询：服务端 scheduler 写入 sentAt/sentAudiences 后，前端内存里的
+  // project/projects[] 是陈旧的——靠 silentSave 同步只在用户编辑时触发，没法覆盖 scheduler 发完通知的更新。
+  // 这里 12s 拉一次 /api/projects，让"状态/实际发送"列自动跟上服务端真实值，避免"要强制刷新才更新"。
+  let overviewPollTimer = null;
+  let overviewPollInFlight = false;
+  async function pollOverview(){
+    if(SERVER_MODE){
+      if(overviewPollInFlight) return;        // 防止上一次还没回来又触发
+      overviewPollInFlight = true;
+      try{
+        const r = await fetch('/api/projects');
+        if(!r.ok) return;
+        const j = await r.json();
+        const fresh = j.projects || [];
+        projects = fresh;
+        if(view==='edit' && currentProjectId && project){
+          const latest = fresh.find(p=>p.id===currentProjectId);
+          // 编辑视图下不整把替换 project（会覆盖用户未保存的编辑），只 merge cloud 权威字段
+          if(latest) mergeCloudAuthorityFields(project, latest);
+        }
+        const isHomeOverview = view==='list' && homeSection==='overview';
+        const isProjectOverview = view==='edit' && editSection==='overview';
+        if(isHomeOverview){
+          const sc = document.querySelector('#app');
+          const st = sc ? sc.scrollTop : 0;
+          renderHomeMain();
+          if(sc) sc.scrollTop = st;
+        } else if(isProjectOverview){
+          renderProjectMain();
+        }
+      }catch(e){ /* 网络抖动忽略，下一轮再试 */ }
+      finally{ overviewPollInFlight = false; }
+    }else if(_sb){
+      if(overviewPollInFlight) return;
+      overviewPollInFlight = true;
+      try{
+        const fresh = await cloudListProjects();
+        projects = fresh;
+        if(view==='edit' && currentProjectId && project){
+          const latest = fresh.find(p=>p.id===currentProjectId);
+          // 编辑视图下不整把替换 project（会覆盖用户未保存的编辑），只 merge cloud 权威字段
+          if(latest) mergeCloudAuthorityFields(project, latest);
+        }
+        const isHomeOverview = view==='list' && homeSection==='overview';
+        const isProjectOverview = view==='edit' && editSection==='overview';
+        if(isHomeOverview){
+          const sc = document.querySelector('#app');
+          const st = sc ? sc.scrollTop : 0;
+          renderHomeMain();
+          if(sc) sc.scrollTop = st;
+        } else if(isProjectOverview){
+          renderProjectMain();
+        }
+      }catch(e){ /* 网络抖动忽略，下一轮再试 */ }
+      finally{ overviewPollInFlight = false; }
+    }
+  }
+
+  // ---------- 渲染 ----------
+  function render(){
+    const headerActions = $('#headerActions');
+    // 已登录标识：render() 每次都会清 headerActions.innerHTML，所以这里在末尾重建一份
+    const renderAuthIndicator = ()=>{
+      if(!headerActions) return;
+      if(getAuthToken()){
+        headerActions.innerHTML = '<span class="auth-indicator">● 已登录 <a href="#" id="authLogout" style="margin-left:6px;color:#2563eb;cursor:pointer">退出</a></span>';
+        const lo = $('#authLogout');
+        if(lo) lo.addEventListener('click', e=>{
+          e.preventDefault();
+          setAuthToken('');
+          document.body.classList.add('auth-pending');
+          const m = document.getElementById('authMask');
+          if(m){ m.classList.add('show'); m.style.display=''; }
+          renderAuthIndicator();
+          // 重新刷新页面以彻底清掉内存中的项目数据
+          location.reload();
+        });
+      } else {
+        headerActions.innerHTML = '';
+      }
+    };
+    if(view==='list'){
+      $('#breadcrumb').textContent='项目列表';
+      $('#saveTip').textContent='';
+      headerActions.innerHTML='';
+      renderHomeSidebar();
+      renderHomeMain();
+      renderAuthIndicator();
+    }else{
+      $('#breadcrumb').innerHTML = `<span class="sub">项目列表</span> / <b>${esc(project.projectName||'未命名项目')}</b> <button class="primary" id="btnBackToList">返回</button>`;
+      $('#btnBackToList').addEventListener('click',()=>setView('list'));
+      headerActions.innerHTML = '';
+      renderProjectSidebar();
+      renderProjectMain();
+      renderAuthIndicator();
+    }
+    // 推送概览实时轮询的启停：
+    // 1) 数据层（合并 cloud sentAt/sentAudiences/status）：只要 _sb 连上就常驻跑，setInterval 8s。
+    //    关键修复：旧版只在 isOverviewView 才启动 timer，导致用户停在编辑视图时 cloud 更新看不到。
+    // 2) DOM 渲染：仍只在 isOverviewView 触发 renderHomeMain / renderProjectMain，
+    //    避免在用户编辑时强制重渲染造成光标跳动、编辑冲突。
+    const _sbReady = !SERVER_MODE && !!_sb;
+    if(_sbReady || SERVER_MODE){
+      if(!overviewPollTimer){
+        overviewPollTimer = setInterval(pollOverview, 8000);
+        pollOverview();
+      }
+    }else{
+      if(overviewPollTimer){ clearInterval(overviewPollTimer); overviewPollTimer = null; }
+    }
+    // 当浏览器标签页重新可见时也立即拉一次（避免运营人切回标签页还看到旧数据）
+    if(typeof window.__tn_visibility_bound === 'undefined'){
+      window.__tn_visibility_bound = true;
+      document.addEventListener('visibilitychange', ()=>{
+        const ov = (view==='list' && homeSection==='overview') || (view==='edit' && editSection==='overview');
+        if(!document.hidden && ov && (SERVER_MODE || _sb)) pollOverview();
+      });
+      window.addEventListener('focus', ()=>{
+        const ov = (view==='list' && homeSection==='overview') || (view==='edit' && editSection==='overview');
+        if(ov && (SERVER_MODE || _sb)) pollOverview();
+      });
+    }
+  }
+
+  // ---------- 主页 ----------
+  function renderHomeSidebar(){
+    const sb = $('#sidebar'); sb.innerHTML='';
+    const nav = (icon,text,active,click)=>{
+      const d=document.createElement('div'); d.className='nav-item'+(active?' active':''); d.innerHTML=`${icon}<span>${text}</span>`; d.addEventListener('click',click); return d;
+    };
+    // 全局搜索
+    const searchDiv = document.createElement('div'); searchDiv.className='home-search';
+    searchDiv.innerHTML = `<div class="search-wrap"><span class="search-icon">🔍</span><input type="search" id="homeSearch" placeholder="搜索项目、负责人、内容…" value="${esc(listSearch)}"></div>`;
+    sb.appendChild(searchDiv);
+    $('#homeSearch', sb).addEventListener('input',e=>{ listSearch=e.target.value.toLowerCase(); renderHomeMain(); });
+
+    sb.appendChild(nav('📋','推送概览',homeSection==='overview',()=>setHomeSection('overview')));
+    sb.appendChild(nav('📁','全部项目',homeSection==='all',()=>setHomeSection('all')));
+
+    // 分类目录
+    const cats = getCategories();
+    if(cats.length>0){
+      sb.appendChild(document.createElement('div')).className='nav-sep'; sb.lastChild.textContent='分类目录';
+      cats.forEach(c=>{
+        sb.appendChild(nav('🏷️', c, homeSection===c, ()=>setHomeSection(c)));
+      });
+    }
+
+    sb.appendChild(document.createElement('div')).className='nav-sep'; sb.lastChild.textContent='操作';
+    sb.appendChild(nav('➕','新建项目',false,newProjectFlow));
+    sb.appendChild(nav('👥','群通讯录',false,()=>{ renderGroups(); $('#groupsModal').classList.add('show'); }));
+    sb.appendChild(nav('📝','文案模板',false,openTemplateManager));
+  }
+
+  function getCategories(){
+    const set = new Set();
+    projects.forEach(p=>{ if(p.category) set.add(p.category); });
+    return Array.from(set).sort((a,b)=>a.localeCompare(b,'zh-CN'));
+  }
+
+  function renderHomeMain(){
+    const app = $('#app'); app.innerHTML='';
+    if(homeSection==='overview'){
+      app.appendChild(buildOverviewPanel(false));
+      return;
+    }
+    // 项目列表
+    let list = projects.slice();
+    const cat = homeSection==='all' ? null : homeSection;
+    if(cat) list = list.filter(p=>p.category===cat);
+    if(listSearch){
+      list = list.filter(p=>{
+        const hay = [(p.projectName||p.name), p.owner, p.category, p.purpose, p.description].join(' ').toLowerCase();
+        return hay.includes(listSearch);
+      });
+    }
+    list.sort((a,b)=>{
+      if(listSort==='startAsc') return (a.startDate||'').localeCompare(b.startDate||'') || new Date(b.updatedAt||0)-new Date(a.updatedAt||0);
+      if(listSort==='updateDesc') return new Date(b.updatedAt||0)-new Date(a.updatedAt||0);
+      return (b.startDate||'').localeCompare(a.startDate||'') || new Date(b.updatedAt||0)-new Date(a.updatedAt||0);
+    });
+
+    // 顶部工具栏
+    const years = Array.from(new Set(projects.map(p=>p.startDate?p.startDate.slice(0,4):''))).filter(Boolean).sort().reverse();
+    const toolbar = document.createElement('div'); toolbar.className='home-topbar';
+    toolbar.innerHTML = `
+      <div class="field" style="max-width:150px"><label style="font-size:11px;color:var(--sub)">排序</label>
+        <select id="listSort"><option value="startDesc" ${listSort==='startDesc'?'selected':''}>开始时间（新→旧）</option><option value="startAsc" ${listSort==='startAsc'?'selected':''}>开始时间（旧→新）</option><option value="updateDesc" ${listSort==='updateDesc'?'selected':''}>最近更新</option></select>
+      </div>
+      <div class="field" style="max-width:120px"><label style="font-size:11px;color:var(--sub)">年度</label>
+        <select id="listYear"><option value="">全部年度</option>${years.map(y=>`<option value="${esc(y)}" ${listYear===y?'selected':''}>${esc(y)}</option>`).join('')}</select>
+      </div>
+      <div class="toolbar-right"><span class="sub">${list.length} 个项目</span></div>`;
+    app.appendChild(toolbar);
+    $('#listSort').addEventListener('change',e=>{listSort=e.target.value;renderHomeMain();});
+    $('#listYear').addEventListener('change',e=>{listYear=e.target.value;renderHomeMain();});
+    if(listYear) list = list.filter(p=>p.startDate && p.startDate.startsWith(listYear));
+
+    if(list.length===0){
+      app.appendChild(document.createElement('div')).className='section-empty';
+      app.lastChild.textContent = cat ? '该分类下没有项目。' : '没有匹配的项目，点击左侧「新建项目」开始。';
+      return;
+    }
+    list.forEach(p=>{
+      const d=document.createElement('div'); d.className='proj-card';
+      const pname = p.projectName || p.name || '未命名项目';
+      const meta=[];
+      if(p.startDate && p.endDate) meta.push(`${p.startDate} ~ ${p.endDate}`);
+      else if(p.startDate) meta.push(`开始 ${p.startDate}`);
+      if(p.owner) meta.push(`负责人：${esc(p.owner)}`);
+      const stages = Array.isArray(p.stages) ? p.stages.length : (p.totalStages||0);
+      const notifs = Array.isArray(p.stages) ? p.stages.reduce((a,s)=>a+(s.notifications||[]).length,0) : (p.totalNotifications||0);
+      meta.push(`${stages} 阶段 · ${notifs} 通知`);
+      const tags=[];
+      if(p.category) tags.push(`<span class="tag brand">${esc(p.category)}</span>`);
+      d.innerHTML = `<div class="title">${esc(pname)}</div>
+        <div class="proj-meta">${esc(meta.join(' · '))}</div>
+        <div>${tags.join('')}</div>
+        <div class="actions" style="margin-top:10px">
+          <button class="primary" data-id="${p.id}">编辑</button>
+          <button class="ghost danger" data-del="${p.id}">删除</button>
+        </div>`;
+      d.querySelector('[data-id]').addEventListener('click',(e)=>{ e.stopPropagation(); setView('edit', p.id); });
+      d.querySelector('[data-del]').addEventListener('click',(e)=>{ e.stopPropagation(); deleteProject(p.id); });
+      app.appendChild(d);
+    });
+  }
+
+  // ---------- 项目页 ----------
+  function renderProjectSidebar(){
+    const sb = $('#sidebar'); sb.innerHTML='';
+    const nav = (icon,text,active,click)=>{
+      const d=document.createElement('div'); d.className='nav-item'+(active?' active':''); d.innerHTML=`${icon}<span>${text}</span>`; d.addEventListener('click',click); return d;
+    };
+    sb.appendChild(nav('ℹ️','项目信息',editSection==='meta',()=>setEditSection('meta')));
+    sb.appendChild(nav('✨','智能识别',editSection==='parse',()=>setEditSection('parse')));
+    sb.appendChild(nav('📋','推送概览',editSection==='overview',()=>setEditSection('overview')));
+    sb.appendChild(nav('📁','通知列表',editSection==='notifs',()=>setEditSection('notifs')));
+
+    // 通知树：直接挂在「通知列表」下方
+    const tree = document.createElement('div'); tree.className='nav-tree';
+    if(project.stages.length===0){
+      tree.innerHTML = '<p class="sub" style="padding:6px 8px;font-size:12px">暂无阶段</p>';
+    }else{
+      project.stages.forEach((s,si)=>{
+        const totalNotif = s.notifications ? s.notifications.length : 0;
+        const stageEl = document.createElement('div'); stageEl.className='nav-stage';
+        stageEl.innerHTML = `<span>${s.collapsed?'▶':'▼'}</span><span>${esc(s.name||`阶段 ${si+1}`)}</span><small style="margin-left:auto;color:var(--sub)">${totalNotif}</small>`;
+        stageEl.addEventListener('click',()=>{
+          // 左侧导航只负责跳转定位，不改变阶段折叠状态
+          setEditSection('notifs');
+          render();
+          setTimeout(()=>{
+            const el=document.getElementById('stage-'+s.id);
+            if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+          }, 50);
+        });
+        tree.appendChild(stageEl);
+        if(!s.collapsed && s.notifications){
+          s.notifications.forEach((n,ni)=>{
+            const notifEl = document.createElement('div'); notifEl.className='nav-notif';
+            notifEl.innerHTML = `<span class="dot" style="background:${n.status==='sent'?'var(--ok)':n.status==='failed'?'var(--err)':'var(--sub)'}" title="状态"></span><span>${esc(n.name||'通知')}</span>`;
+            notifEl.addEventListener('click',()=>{
+              // 点击通知时确保所属阶段和通知本身展开，便于定位查看
+              s.collapsed = false;
+              n.collapsed = false;
+              setEditSection('notifs');
+              render();
+              setTimeout(()=>{
+                const el=document.getElementById('notif-'+n.id);
+                if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+              }, 50);
+            });
+            tree.appendChild(notifEl);
+          });
+        }
+      });
+    }
+    sb.appendChild(tree);
+    sb.appendChild(nav('➕','添加阶段',false,()=>{ project.stages.push(defaultStage()); setEditSection('notifs'); render(); scheduleAutoSave(); }));
+  }
+
+  function renderProjectMain(){
+    const app = $('#app'); app.innerHTML='';
+    if(editSection==='meta') app.appendChild(renderProjectMeta());
+    else if(editSection==='parse') app.appendChild(renderSmartIdentifySection());
+    else if(editSection==='overview') app.appendChild(buildOverviewPanel(true));
+    else app.appendChild(renderNotificationsSection());
+  }
+
+  function renderProjectMeta(){
+    const card = document.createElement('div'); card.className='card'; card.id='meta';
+    const selectedIds = new Set(project.associatedGroupIds||[]);
+    const selectedGroups = sortGroups(globalGroups.filter(g=>selectedIds.has(g.id)));
+    const selectedPills = selectedGroups.length
+      ? selectedGroups.map(g=>`<span class="pill ${g.type}">${GROUPS_LABEL[g.type]||g.type}</span> ${esc(g.name)}`).join(' · ')
+      : '<span class="sub">尚未选择关联群，写通知时会显示全部通讯录。</span>';
+
+    const categories = getCategories();
+    const catOptions = categories.map(c=>`<option value="${esc(c)}" ${project.category===c?'selected':''}>${esc(c)}</option>`).join('');
+
+    card.innerHTML = `<h3>项目信息</h3>
+      <div class="meta-grid">
+        <div class="field"><label>项目名称</label><input type="text" data-k="projectName" value="${esc(project.projectName||'')}" placeholder="如：A+经理人培训"></div>
+        <div class="field"><label>项目开始</label><input type="date" data-k="startDate" value="${esc(project.startDate||'')}"></div>
+        <div class="field"><label>项目结束</label><input type="date" data-k="endDate" value="${esc(project.endDate||'')}"></div>
+        <div class="field"><label>负责人</label><input type="text" data-k="owner" value="${esc(project.owner||'')}" placeholder="培训运营负责人"></div>
+        <div class="field" style="min-width:200px"><label>分类 <span class="sub">（非必填）</span></label>
+          <div class="row" style="margin:0;gap:6px">
+            <input list="categoryOptions" type="text" data-k="category" value="${esc(project.category||'')}" placeholder="选择或输入新分类" style="flex:1">
+            <button class="ghost mini-btn" id="btnManageCat" type="button">管理</button>
+          </div>
+          <datalist id="categoryOptions">${catOptions}</datalist>
+        </div>
+        <div class="field" style="grid-column:1/-1"><label>培训目的</label><textarea data-k="purpose" placeholder="培训目标、背景说明">${esc(project.purpose||'')}</textarea></div>
+        <div class="field" style="grid-column:1/-1"><label>项目描述 / 备注</label><textarea data-k="description" placeholder="其他项目级说明">${esc(project.description||'')}</textarea></div>
+        <div class="field" style="grid-column:1/-1"><label>整体安排 <span class="sub">（非必填，可用于项目启动通知或任意节点；支持文字，图片功能待上线后统一调整）</span></label><textarea data-k="overallArrangement" placeholder="如：本次培训采用“线上测评 + 微课学习 + 线下授课 + 返岗实践”四位一体的 O2O 翻转学习模式…">${esc(project.overallArrangement||'')}</textarea></div>
+      </div>
+      <h4 style="margin-top:14px">项目关联群</h4>
+      <p class="hint">设置关联群后，写通知时只显示这些群，避免在大量通讯录中反复查找。</p>
+      <div class="assoc-bar ${selectedGroups.length?'':'empty'}">
+        <div style="flex:1">${selectedPills}</div>
+        <button class="ghost mini-btn" id="btnPickAssoc">${selectedGroups.length?'重新选择':'从通讯录选择'}</button>
+      </div>`;
+    $$('[data-k]',card).forEach(inp=>{
+      const handler = ()=>{ project[inp.dataset.k]=inp.value; scheduleAutoSave(); };
+      inp.addEventListener('input', handler);
+      // 失焦/回车时立即落盘，避免 1 秒 debounce 期间切走导致 silentSave 不跑
+      // （之前踩过的坑：用户改了项目名立刻切走 → server 文件 projectName 字段丢失 → 项目列表兜底显示"未命名项目"）
+      inp.addEventListener('blur', flushAutoSave);
+      if(inp.tagName==='INPUT' && inp.type==='text') inp.addEventListener('keydown', e=>{ if(e.key==='Enter') flushAutoSave(); });
+    });
+    $('#btnPickAssoc',card).addEventListener('click', openAssocPicker);
+    $('#btnManageCat',card).addEventListener('click', openCategoryManager);
+    return card;
+  }
+
+  function renderParseSection(){
+    const wrap = document.createElement('div'); wrap.className='identify-block';
+    const draft = project._parseDraft || {};
+    wrap.innerHTML = `<div class="section-title" style="margin-top:18px"><h4>识别培训方案</h4></div>
+      <p class="sub">粘贴培训方案/日程文本，自动提取阶段与学习任务（测试功能，提取后请人工核对）。</p>
+      <textarea id="parseInput" style="min-height:160px" placeholder="例如：
+阶段一：线上学习（8月1日-8月7日）
+任务1：微课学习（截止8月5日）
+任务2：填写调研问卷（截止8月7日）
+阶段二：线下集训（8月10日-8月12日）
+..."></textarea>
+      <div class="actions" style="justify-content:flex-end;margin-top:10px">
+        <button class="ghost" id="btnClearParse" type="button">清空</button>
+        <button class="primary" id="btnDoParseInline">识别并预览</button>
+      </div>
+      <div id="parseResult"></div>`;
+    const ta = $('#parseInput',wrap); ta.value = draft.text || '';
+    const res = $('#parseResult',wrap);
+    if(draft.results && draft.results.length) renderParsePreview(res, draft.results);
+    $('#btnDoParseInline',wrap).addEventListener('click', doParse);
+    $('#btnClearParse',wrap).addEventListener('click',()=>{ ta.value=''; res.innerHTML=''; delete project._parseDraft; scheduleAutoSave(); });
+    return wrap;
+  }
+  function renderParsePreview(box, newStages){
+    const taskCount = newStages.reduce((a,s)=>a+s.tasks.length,0);
+    let html = `<div class="copyrec-table" style="margin-top:14px">`;
+    newStages.forEach((s,i)=>{
+      const tasks = s.tasks.map(t=>`${esc(t.name||'未命名任务')}${t.dueDate?'（截止 '+t.dueDate+'）':''}`).join('、') || '（无任务）';
+      html += `<div class="copyrec-row" style="align-items:flex-start">
+        <span class="cr-stage">${esc(s.name||'阶段 '+(i+1))}</span>
+        <span class="cr-aud">${s.startDate||s.endDate?(s.startDate||'')+(s.endDate?' ~ '+s.endDate:''):'未识别时间'}</span>
+        <span class="cr-preview">${esc(tasks)}</span>
+      </div>`;
+    });
+    html += `</div>
+    <div class="actions" style="margin-top:10px">
+      <button class="ghost" id="btnCancelParse" type="button">取消</button>
+      <button class="primary" id="btnConfirmParse">确认导入 ${newStages.length} 个阶段、${taskCount} 个任务</button>
+    </div>`;
+    box.innerHTML = html;
+    $('#btnCancelParse',box).addEventListener('click',()=>{ box.innerHTML=''; delete project._parseDraft; scheduleAutoSave(); });
+    $('#btnConfirmParse',box).addEventListener('click',()=>{
+      project.stages = project.stages.concat(newStages);
+      delete project._parseDraft;
+      scheduleAutoSave();
+      editSection = 'notifs';
+      render();
+      toast('已导入 '+newStages.length+' 个阶段、'+taskCount+' 个任务，请人工核对');
+    });
+  }
+  function renderSmartIdentifySection(){
+    const card = document.createElement('div'); card.className='card';
+    card.innerHTML = `<h3>智能识别</h3>
+      <p class="sub">将培训方案或通知文案批量粘贴进来，自动解析为结构化的阶段/任务或受众通知。提取结果请人工核对后再导入。</p>`;
+    card.appendChild(renderParseSection());
+    card.appendChild(renderCopyRecSection());
+    return card;
+  }
+
+  function renderNotificationsSection(){
+    const frag = document.createDocumentFragment();
+    if(project.stages.length===0){
+      const empty = document.createElement('div'); empty.className='section-empty';
+      empty.textContent = '还没有阶段，点击左侧「添加阶段」开始。';
+      frag.appendChild(empty);
+      return frag;
+    }
+    project.stages.forEach((stage,si)=> frag.appendChild(renderStage(stage,si)));
+    return frag;
+  }
+
+  // ---------- 阶段 / 任务 / 通知 ----------
+  function renderStage(stage, si){
+    const card = document.createElement('div'); card.className='stage'+(stage.collapsed?' collapsed':''); card.id='stage-'+stage.id;
+    const datesText = (stage.startDate||stage.endDate) ? `${stage.startDate||''} ~ ${stage.endDate||''}` : '';
+    card.innerHTML = `<div class="stage-head">
+      <button class="fold-btn" data-act="foldStage">${stage.collapsed?'▶':'▼'}</button>
+      <input type="text" data-k="name" value="${esc(stage.name)}" placeholder="阶段名称">
+      <span class="dates">${esc(datesText)}</span>
+      <button class="ghost danger mini-btn" data-act="delStage" style="margin-left:auto">删除</button>
+    </div>
+    <div class="stage-body">
+      <div class="stage-info-block">
+        <div class="section-title" style="margin-top:0"><h4>基础信息</h4></div>
+        <div class="row" style="align-items:flex-end;margin-bottom:8px">
+          <div class="field" style="max-width:170px"><label>阶段开始时间</label><input type="date" data-k="startDate" value="${esc(stage.startDate)}" placeholder="开始日期"></div>
+          <div class="field" style="max-width:110px"><label>&nbsp;<span class="sub">（非必填）</span></label><input type="time" data-k="startTime" value="${esc(stage.startTime)}" placeholder="--:--"></div>
+          <div class="field" style="max-width:170px"><label>阶段结束时间</label><input type="date" data-k="endDate" value="${esc(stage.endDate)}" placeholder="结束日期"></div>
+          <div class="field" style="max-width:110px"><label>&nbsp;<span class="sub">（非必填）</span></label><input type="time" data-k="endTime" value="${esc(stage.endTime)}" placeholder="--:--"></div>
+        </div>
+        <div class="row" style="align-items:flex-end;margin-bottom:8px">
+          <div class="field" style="flex:1;min-width:200px"><label>地点 / 会议链接 <span class="sub">（非必填）</span></label><input type="text" data-k="placeOrLink" value="${esc(stage.placeOrLink)}" placeholder="线上请填链接，线下请填场地"></div>
+        </div>
+        <div class="row" style="align-items:flex-end;margin-bottom:8px">
+          <div class="field" style="flex:1;min-width:200px"><label>识别关键词 <span class="sub">（非必填，识别文案时自动归类用，逗号分隔，如：报名,开营,课前）</span></label><input type="text" data-k="keywords" value="${esc(stage.keywords)}" placeholder="如：报名,开营,课前"></div>
+        </div>
+        <div class="section-title" style="margin-top:16px"><h4>学习任务</h4><button class="ghost mini-btn" data-act="addTask">+ 添加任务</button></div>
+        <div data-tasklist></div>
+      </div>
+      <div class="notif-settings-block">
+        <div class="section-title" style="margin-top:0"><h4>通知设置</h4><button class="ghost mini-btn" data-act="addNotif">+ 添加通知</button></div>
+        <div data-notiflist></div>
+      </div>
+    </div>`;
+    const head = card.querySelector('.stage-head');
+    head.querySelector('[data-act="foldStage"]').addEventListener('click',()=>{ stage.collapsed=!stage.collapsed; render(); });
+    head.querySelector('[data-act="delStage"]').addEventListener('click',()=>{ if(confirm('确认删除该阶段及其下所有任务与通知？')){ project.stages.splice(si,1); render(); scheduleAutoSave(); }});
+    $$('[data-k]',head).forEach(inp=> inp.addEventListener('input',()=>{ stage[inp.dataset.k]=inp.value; scheduleAutoSave(); renderProjectSidebar(); }));
+    const pub = card.querySelector('.stage-info-block');
+    const startDateInp = pub.querySelector('[data-k="startDate"]');
+    const endDateInp = pub.querySelector('[data-k="endDate"]');
+    function validateStageDates(){
+      if(stage.startDate && stage.endDate && stage.startDate > stage.endDate){
+        toast('开始日期不能晚于结束日期');
+        return false;
+      }
+      return true;
+    }
+    $$('[data-k]',pub).forEach(inp=>{
+      if(inp.dataset.k==='startDate' || inp.dataset.k==='endDate'){
+        inp.addEventListener('change',()=>{
+          const old = stage[inp.dataset.k];
+          stage[inp.dataset.k]=inp.value;
+          if(stage.startDate && stage.endDate && stage.startDate > stage.endDate){
+            toast('开始日期不能晚于结束日期');
+            stage[inp.dataset.k]=old;
+            inp.value=old;
+            return;
+          }
+          syncStageHeadDates();
+          scheduleAutoSave();
+        });
+      }else{
+        inp.addEventListener('input',()=>{
+          stage[inp.dataset.k]=inp.value;
+          scheduleAutoSave();
+        });
+      }
+    });
+    const dateSpan = head.querySelector('.dates');
+    function syncStageHeadDates(){
+      const dt = (stage.startDate||stage.endDate) ? `${stage.startDate||''} ~ ${stage.endDate||''}` : '';
+      if(dateSpan) dateSpan.textContent = dt;
+    }
+    card.querySelector('[data-act="addTask"]').addEventListener('click',()=>{ stage.tasks.push(defaultTask()); render(); scheduleAutoSave(); });
+    card.querySelector('[data-act="addNotif"]').addEventListener('click',()=>{ stage.notifications.push(defaultNotification()); render(); scheduleAutoSave(); });
+    const tl = card.querySelector('[data-tasklist]');
+    if(stage.tasks.length===0) tl.innerHTML='<p class="sub">暂无学习任务</p>';
+    else stage.tasks.forEach((t,ti)=> tl.appendChild(renderTask(stage,t,ti)));
+    const nl = card.querySelector('[data-notiflist]');
+    if(stage.notifications.length===0) nl.innerHTML='<p class="sub">暂无通知</p>';
+    else stage.notifications.forEach((n,ni)=> nl.appendChild(renderNotification(stage,n,ni)));
+    return card;
+  }
+
+  function renderTask(stage, task, ti){
+    const d = document.createElement('div'); d.className='task'+(task.collapsed?' collapsed':'');
+    d.innerHTML = `<div class="task-head">
+      <button class="fold-btn">${task.collapsed?'▶':'▼'}</button>
+      <input type="text" data-k="name" value="${esc(task.name)}" placeholder="任务名称">
+      <button class="ghost danger mini-btn" data-act="delTask">删除</button>
+    </div>
+    <div class="task-meta-row">
+      <label>截止日期</label>
+      <input type="date" data-k="dueDate" value="${esc(task.dueDate)}" placeholder="年/月/日">
+    </div>
+    <div class="task-body">
+      <div class="field"><label>任务内容 / 说明</label><textarea data-k="description" placeholder="任务要求、操作步骤等">${esc(task.description)}</textarea></div>
+      <h4 style="margin:8px 0 4px">附件</h4>
+      <div data-attlist></div>
+      <button class="ghost mini-btn" data-act="addAtt">+ 添加附件</button>
+    </div>`;
+    d.querySelector('.task-head').addEventListener('click',(e)=>{ if(e.target.closest('input')||e.target.closest('button')) return; task.collapsed=!task.collapsed; render(); });
+    d.querySelector('.fold-btn').addEventListener('click',(e)=>{ e.stopPropagation(); task.collapsed=!task.collapsed; render(); });
+    d.querySelector('[data-act="delTask"]').addEventListener('click',()=>{ stage.tasks.splice(ti,1); render(); scheduleAutoSave(); });
+    d.querySelector('[data-act="addAtt"]').addEventListener('click',()=>{ task.attachments.push(defaultAttachment()); render(); scheduleAutoSave(); });
+    $$('[data-k]',d).forEach(inp=>{
+      inp.addEventListener('input',()=>{
+        task[inp.dataset.k]=inp.value;
+        if(inp.dataset.k==='name'||inp.dataset.k==='dueDate') syncTaskLabel(task);
+        scheduleAutoSave();
+      });
+    });
+    const al = d.querySelector('[data-attlist]');
+    if(task.attachments.length===0) al.innerHTML='<p class="sub">暂无附件</p>';
+    else task.attachments.forEach((a,ai)=> al.appendChild(renderAttachment(task,a,ai)));
+    return d;
+  }
+  function syncTaskLabel(task){
+    const text = (task.name||'未命名任务') + (task.dueDate?` (截止 ${task.dueDate})`:'') + (task.description?' · 有说明':'');
+    document.querySelectorAll(`label[data-taskid="${task.id}"] .tntext`).forEach(span=> span.textContent = text);
+  }
+  function renderAttachment(task, att, ai){
+    const d = document.createElement('div'); d.className='att-item';
+    const isImage = att.type === 'image';
+    d.innerHTML = `<div class="row">
+        <div class="field" style="max-width:120px"><label>类型</label><select data-k="type"><option value="link" ${!isImage?'selected':''}>链接</option><option value="image" ${isImage?'selected':''}>图片</option></select></div>
+        <div class="field"><label>附件名称</label><input type="text" data-k="name" value="${esc(att.name)}" placeholder="如：A+经理人日程表"></div>
+        <div class="field" style="flex:1.5"><label>${isImage?'图片 URL':'链接地址'}</label><div style="display:flex;gap:4px;align-items:center"><input type="text" data-k="url" value="${esc(att.url)}" placeholder="https://..." style="flex:1">${isImage?'<button class="ghost mini-btn" data-act="attUpload" type="button" title="上传图片到图床，自动填入 URL">📷 上传</button><input type="file" accept="image/*" hidden data-att-img>':''}</div></div>
+        <div class="field link-text-field" style="max-width:160px;${isImage?'display:none':''}"><label>链接显示文字</label><input type="text" data-k="linkText" value="${esc(att.linkText)}" placeholder="留空显示 URL"></div>
+        <button class="ghost danger mini-btn" data-act="delAtt" style="margin-bottom:8px">删除</button>
+      </div>`;
+    $$('[data-k]',d).forEach(inp=>{
+      if(inp.dataset.k==='type'){
+        inp.addEventListener('change',()=>{
+          att.type = inp.value;
+          render(); scheduleAutoSave();
+        });
+      }else{
+        inp.addEventListener('input',()=>{ att[inp.dataset.k]=inp.value; scheduleAutoSave(); });
+      }
+    });
+    d.querySelector('[data-act="delAtt"]').addEventListener('click',()=>{ task.attachments.splice(ai,1); render(); scheduleAutoSave(); });
+    // 📷 上传图片到图床并自动填入 URL
+    const attUploadBtn = d.querySelector('[data-act="attUpload"]');
+    const attFileInput = d.querySelector('[data-att-img]');
+    if(attUploadBtn && attFileInput){
+      attUploadBtn.addEventListener('click',()=> attFileInput.click());
+      attFileInput.addEventListener('change',()=>{
+        const file = attFileInput.files[0]; if(!file) return;
+        if(file.size > 5*1024*1024){ toast('图片超过 5MB，请压缩后再上传'); attFileInput.value=''; return; }
+        const urlInp = d.querySelector('input[data-k="url"]');
+        const nameInp = d.querySelector('input[data-k="name"]');
+        const reader = new FileReader();
+        reader.onload = async ()=>{
+          try{
+            let j;
+            if(SERVER_MODE){
+              const r = await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataUrl:reader.result})});
+              j = await r.json();
+            }else if(_sb){
+              j = await cloudUpload(reader.result);
+            }else{
+              toast('本地预览模式无法上传图片，请用本地服务'); attFileInput.value=''; return;
+            }
+            if(j && j.success){
+              if(urlInp && !urlInp.value) urlInp.value = j.url;
+              if(nameInp && !nameInp.value) nameInp.value = file.name.replace(/\.[^.]+$/, '');
+              att.url = urlInp ? urlInp.value : j.url;
+              att.name = nameInp ? nameInp.value : (file.name.replace(/\.[^.]+$/, ''));
+              scheduleAutoSave();
+              toast('图片已上传，自动填入 URL');
+            } else { toast('上传失败：'+(j.error||'未知错误')); }
+          }catch(e){ toast('上传异常：'+e.message); }
+          attFileInput.value='';
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+    return d;
+  }
+
+    function renderNotification(stage, n, ni){
+    if(!n.audienceContent) n.audienceContent={ student:defaultAudienceConfig(), lecturer:defaultAudienceConfig(), manager:defaultAudienceConfig() };
+    AUDIENCES.forEach(a=>{ if(!n.audienceContent[a]) n.audienceContent[a]=defaultAudienceConfig(); });
+    if(!(n.id in activeAud)) activeAud[n.id] = 'student';
+    if(n.collapsed===undefined) n.collapsed = false;
+
+    const d = document.createElement('div'); d.className='notif'+(n.collapsed?' collapsed':''); d.id='notif-'+n.id;
+    const statusPill = n.status==='sent' ? '<span class="pill sent">已发送</span>' : (n.status==='failed'?'<span class="pill failed">失败</span>':'<span class="pill draft">草稿</span>');
+
+    d.innerHTML = `<div class="notif-head">
+      <button class="fold-btn">${n.collapsed?'&#9654;':'&#9660;'}</button>
+      <input type="text" data-k="name" value="${esc(n.name)}" placeholder="建议按节点命名，如：学习阶段启动通知、中程提醒、截止前提醒">
+      ${statusPill}
+      <div class="notif-actions">
+        <button class="ghost mini-btn" data-act="copyNotif" title="基于此通知复制一份：文案/任务勾选保留，目标群与发送时间会清空">复制</button>
+        <button class="ghost danger mini-btn" data-act="delNotif">删除</button>
+      </div>
+    </div>
+    <div class="notif-body">
+      <div class="tabs" data-tabs></div>
+      <div data-audpanel></div>
+    </div>`;
+
+    const head = d.querySelector('.notif-head');
+    head.querySelector('.fold-btn').addEventListener('click',(e)=>{ e.stopPropagation(); n.collapsed=!n.collapsed; render(); });
+    head.addEventListener('click',(e)=>{ if(e.target.closest('input')||e.target.closest('button')||e.target.closest('.pill')) return; n.collapsed=!n.collapsed; render(); });
+    d.querySelector('[data-k="name"]').addEventListener('input',e=>{ n.name=e.target.value; scheduleAutoSave(); renderProjectSidebar(); });
+    d.querySelector('[data-act="delNotif"]').addEventListener('click',()=>{ if(confirm('确认删除该通知？')){ stage.notifications.splice(ni,1); render(); scheduleAutoSave(); }});
+    d.querySelector('[data-act="copyNotif"]').addEventListener('click',(e)=>{ e.stopPropagation(); openCopyNotifModal(stage, n); });
+
+    const tabsWrap = d.querySelector('[data-tabs]');
+    AUDIENCES.forEach(a=>{
+      const ac = n.audienceContent[a];
+      const t = document.createElement('div'); t.className='tab'+(activeAud[n.id]===a?' active':'');
+      t.innerHTML = `${GROUPS_LABEL[a]}${ac.enabled?'<span class="dot"></span>':''}`;
+      t.addEventListener('click',()=>{ activeAud[n.id]=a; render(); });
+      tabsWrap.appendChild(t);
+    });
+    const panel = d.querySelector('[data-audpanel]');
+    panel.appendChild(renderAudience(stage,n,activeAud[n.id]));
+    return d;
+  }
+
+  // === 复制通知助手 ===
+  // 复制一份 ac，targetGroups/notifyAt/enabled 全部清空避免意外触发
+  function copyAudienceContent(src){
+    return {
+      content: src.content || '',
+      taskIds: Array.isArray(src.taskIds) ? src.taskIds.slice() : [],
+      taskOrder: Array.isArray(src.taskOrder) ? src.taskOrder.slice() : [],
+      notifyAt: '',
+      enabled: false,
+      targetGroups: [],
+      useTemplate: src.useTemplate || false,
+      _templateId: src._templateId || '',
+      _templateSnapshot: src._templateSnapshot || '',
+      templateOutdated: src.templateOutdated || false,
+      inputMode: src.inputMode || '',
+      remarks: src.remarks || '',
+    };
+  }
+  function buildCopiedNotification(src){
+    const copy = {
+      id: uid(),
+      name: (src.name || '未命名通知') + '（副本）',
+      node: src.node || 'start',
+      audienceContent: {
+        student: copyAudienceContent(src.audienceContent.student || {}),
+        lecturer: copyAudienceContent(src.audienceContent.lecturer || {}),
+        manager: copyAudienceContent(src.audienceContent.manager || {}),
+      },
+      status: 'draft',
+      sentAt: null,
+      sendAttempts: 0,
+      sentAudiences: [],
+      collapsed: false,
+    };
+    copy.audienceContent.student._copiedFrom = src.id;
+    copy.audienceContent.lecturer._copiedFrom = src.id;
+    copy.audienceContent.manager._copiedFrom = src.id;
+    return copy;
+  }
+  // 复制到指定阶段，弹浮层模态让用户选阶段 + 命名
+  function openCopyNotifModal(srcStage, srcNotif){
+    const old = document.getElementById('copyNotifModal');
+    if(old) old.remove();
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask show';
+    mask.id = 'copyNotifModal';
+    const d = document.createElement('div');
+    d.className = 'modal';
+    d.style.maxWidth = '520px';
+    const stageOptions = (project.stages||[]).map((s,i)=>{
+      const lbl = `${i+1}. ${s.name||'阶段 '+(i+1)}` + (s.id===srcStage.id?'（本阶段）':'');
+      return `<option value="${esc(s.id)}" ${s.id===srcStage.id?'selected':''}>${esc(lbl)}</option>`;
+    }).join('');
+    d.innerHTML = `
+      <h3>复制通知</h3>
+      <p class="sub">原通知：${esc(srcNotif.name||'未命名')}</p>
+      <div style="margin: 14px 0 8px"><label>新通知名称</label><input type="text" id="copyNotifName" value="${esc((srcNotif.name||'未命名通知')+'（副本）')}" style="width:100%;padding:6px;margin-top:4px"></div>
+      <div style="margin: 14px 0 8px"><label>复制到阶段</label><select id="copyNotifStage" style="width:100%;padding:6px;margin-top:4px">${stageOptions}</select></div>
+      <div style="background:#fef9c3;border:1px solid #fde68a;border-radius:4px;padding:10px;margin:14px 0 4px;font-size:13px;color:#713f12">
+        <strong>复制规则</strong>
+        <ul style="margin:6px 0 0 16px;padding:0">
+          <li>文案内容、任务勾选、附件链接 完整复制</li>
+          <li><strong>目标群、发送时间 会清空</strong>（避免无意触发）</li>
+          <li>三个受众默认停用（启用开关关闭），需打开后才真发</li>
+          <li><code>{{阶段名}}</code> <code>{{阶段时间}}</code> <code>{{任务列表}}</code> 等变量按所选目标阶段实时读取</li>
+        </ul>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
+        <button class="ghost" id="copyNotifCancel">取消</button>
+        <button class="primary" id="copyNotifConfirm">复制</button>
+      </div>
+    `;
+    mask.appendChild(d);
+    document.body.appendChild(mask);
+    $('#copyNotifCancel', mask).addEventListener('click',()=>{ mask.remove(); });
+    mask.addEventListener('click',(e)=>{ if(e.target===mask) mask.remove(); });
+    $('#copyNotifConfirm', mask).addEventListener('click',()=>{
+      const name = $('#copyNotifName', mask).value.trim() || '（副本）';
+      const targetStageId = $('#copyNotifStage', mask).value;
+      const targetStage = (project.stages||[]).find(s=>s.id===targetStageId);
+      if(!targetStage){ toast('目标阶段不存在'); return; }
+      const newNotif = buildCopiedNotification(srcNotif);
+      newNotif.name = name;
+      targetStage.notifications.push(newNotif);
+      scheduleAutoSave();
+      mask.remove();
+      render();
+      const tab = editSection; // 切到 notifs 区域让用户看到新通知
+      setEditSection('notifs');
+      toast(`已复制到「${targetStage.name||'未命名阶段'}」`);
+    });
+  }
+
+    function renderAudience(stage, n, aud){
+    const ac = n.audienceContent[aud];
+    const groups = getAudienceGroups(aud);
+    const pick = groups.length ? groups.map(g=>`<label class="chk"><input type="checkbox" class="gpick" value="${g.id}" ${(ac.targetGroups||[]).includes(g.id)?'checked':''}> ${esc(g.name)}${g.type!==aud?` <span class="sub">（${g.type==='test'?'测试':g.type==='student'?'学员':g.type==='lecturer'?'讲师':'管理'}）</span>`:''}</label>`).join('') : '<span class="sub">通讯录中暂无任何群，请到「群通讯录」添加。</span>';
+    const outdatedTpl = isTemplateOutdated(ac);
+
+    const baseIds = stage.tasks.map(t=>t.id);
+    let orderedIds = (ac.taskOrder && ac.taskOrder.length) ? ac.taskOrder.slice() : baseIds.slice();
+    baseIds.forEach(id=>{ if(!orderedIds.includes(id)) orderedIds.push(id); });
+    const taskOpts = orderedIds.map(id=>{
+      const t = stage.tasks.find(x=>x.id===id);
+      if(!t) return '';
+      const text = (t.name||'未命名任务') + (t.dueDate?` (截止 ${t.dueDate})`:'' ) + (t.description?' · 有说明':'');
+      return `<label class="chk" data-taskid="${t.id}" draggable="true" style="cursor:move" title="拖拽可调整该通知中的任务顺序"><input type="checkbox" class="taskpick" value="${t.id}" ${(ac.taskIds||[]).includes(t.id)?'checked':''}><span class="tntext">${esc(text)}</span></label>`;
+    }).filter(Boolean).join('') || '<span class="sub">该阶段暂无任务，请先添加任务</span>';
+
+    const fieldGroups = [
+      {label:'项目信息', fields:[{v:'{{项目名}}',l:'项目名'},{v:'{{负责人}}',l:'负责人'},{v:'{{培训目的}}',l:'培训目的'},{v:'{{整体安排}}',l:'整体安排'},{v:'{{项目开始}}',l:'项目开始'},{v:'{{项目结束}}',l:'项目结束'}]},
+      {label:'阶段信息', fields:[{v:'{{阶段名}}',l:'阶段名'},{v:'{{阶段开始时间}}',l:'阶段开始时间'},{v:'{{阶段结束时间}}',l:'阶段结束时间'},{v:'{{地点/链接}}',l:'地点/链接'}]},
+      {label:'任务信息', fields:[{v:'{{任务列表}}',l:'任务列表'}]}
+    ];
+
+    const d = document.createElement('div'); d.className='aud-panel';
+    const isPaste = ac.inputMode==='paste';
+    d.innerHTML = `
+      <div class="section-title" style="margin-top:0"><h4>发送目标群 · ${GROUPS_LABEL[aud]}</h4></div>
+      <div class="group-pick">${pick}</div>
+      <div class="row" style="align-items:center;margin:10px 0 14px;gap:10px">
+        <label class="chk" style="margin:0"><input type="checkbox" id="ena-${n.id}-${aud}" ${ac.enabled?'checked':''}> 启用并发送给以上目标群</label>
+      </div>
+      <div class="section-title"><h4>发送时间</h4></div>
+      <div class="row" style="align-items:flex-end;margin-bottom:14px">
+        <div class="field" style="max-width:220px"><input type="datetime-local" data-k="notifyAt" value="${esc(ac.notifyAt)}"></div>
+        <label class="chk" style="margin-bottom:8px"><input type="checkbox" data-k="autoSend" ${ac.autoSend!==false?'checked':''}> 自动发送</label>
+      </div>
+      ${(ac.autoSend===false && ac.notifyAt) ? `<div class="auto-paused-chip" data-auto-paused-chip style="background:#fff3e0;border:1px solid #f59e0b;border-radius:6px;padding:8px 12px;margin-bottom:14px;font-size:12px;color:#9a4f00;display:flex;align-items:center;gap:6px"><span style="font-size:14px">⚠</span><span>自动发送已暂停——确认所有信息（文案/受众群/任务）后再勾选「自动发送」</span></div>` : ''}
+      <div data-template-only ${isPaste?'hidden':''}>
+        <div class="section-title"><h4>关联学习任务</h4></div>
+        <div class="group-pick" data-taskwrap>${taskOpts}</div>
+      </div>
+      <div class="section-title" style="margin-top:14px"><h4>通知文案</h4></div>
+      <div class="seg-wrap" style="margin:8px 0 10px">
+        <span class="seg-label">录入方式</span>
+        <div class="seg" data-seg="inputMode">
+          <button type="button" data-mode="template" class="${!isPaste?'active':''}">模板配置</button>
+          <button type="button" data-mode="paste" class="${isPaste?'active':''}">直接粘贴</button>
+        </div>
+      </div>
+      <div class="hint" style="margin:0 0 8px;line-height:1.7">
+        ${isPaste
+          ? '直接粘贴模式：文案框内容将原样发送。支持 <code>**文字**</code> 加粗、<code>[标题](链接)</code> 链接。'
+          : '支持 markdown_v2 语法：<code>**[文字]**</code> 加粗、<code>[标题](链接)</code> 链接、<code>![说明](图片URL)</code> 图片。点击「插入字段」选择动态变量；手动修改文案与字段按钮不会反向改动模板内容。'}
+      </div>
+      <div class="row" style="display:flex;gap:6px;margin:6px 0;align-items:center;flex-wrap:wrap" data-template-only ${isPaste?'hidden':''}>
+        <button class="ghost mini-btn" data-act="applyTemplate" type="button">选择模板</button>
+        <div class="field-dropdown" data-field-dropdown>
+          <button class="ghost mini-btn" type="button">插入字段 ▼</button>
+          <div class="menu">
+            ${fieldGroups.map(g=>`<div class="menu-group">${esc(g.label)}</div>`+g.fields.map(f=>`<div class="menu-item" data-var="${esc(f.v)}">${esc(f.l)} <code style="color:var(--sub)">${esc(f.v)}</code></div>`).join('')).join('')}
+          </div>
+        </div>
+        <button class="ghost mini-btn" data-act="uploadImg" type="button" title="上传图片到图床并插入通知正文">上传图片</button>
+        <input type="file" accept="image/*" hidden data-img-input>
+      </div>
+      ${outdatedTpl ? `<div class="tpl-warn" data-template-only ${isPaste?'hidden':''} style="background:#fffbe8;border:1px solid #ffe7a3;border-radius:6px;padding:8px 10px;margin:8px 0;font-size:12px;color:#8c6a00;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <span>&#9888; 该文案使用的模板「${esc(outdatedTpl.label)}」已更新，是否使用最新版本？</span>
+        <span style="display:flex;gap:6px">
+          <button class="ghost mini-btn" data-act="keepOldTpl">保留当前文案</button>
+          <button class="primary mini-btn" data-act="useNewTpl" data-tplid="${esc(outdatedTpl.id)}">使用新版</button>
+        </span>
+      </div>` : ''}
+      <textarea class="aud-content" data-aud="${aud}" placeholder="在此编写${GROUPS_LABEL[aud]}版文案">${esc(ac.content)}</textarea>
+      <div class="actions">
+        <button class="ghost" data-act="previewAll">预览全部</button>
+        <span class="btn-split" data-test-split>
+          <button class="ghost" data-act="testSendCurrent" type="button">发送至测试群</button>
+          <button class="ghost" data-toggle="testSendMenu" type="button">▼</button>
+          <div class="dropdown-menu" data-menu="testSendMenu">
+            <div class="dropdown-item" data-act="testSendCurrent">仅 ${esc(GROUPS_LABEL[aud])}</div>
+            <div class="dropdown-item" data-act="testSendAll">此通知全部启用受众</div>
+          </div>
+        </span>
+        <span class="btn-split" data-send-split>
+          <button class="primary" data-act="sendCurrent" type="button">立即发送</button>
+          <button class="primary" data-toggle="sendMenu" type="button">▼</button>
+          <div class="dropdown-menu" data-menu="sendMenu">
+            <div class="dropdown-item" data-act="sendCurrent">仅 ${esc(GROUPS_LABEL[aud])}</div>
+            <div class="dropdown-item" data-act="sendAll">此通知全部启用受众</div>
+          </div>
+        </span>
+      </div>`;
+
+    d.querySelector('[data-k="notifyAt"]').addEventListener('change',e=>{
+      const oldAt = ac.notifyAt;
+      const newAt = e.target.value;
+      ac.notifyAt = newAt;
+      // 修改了发送时间（用 change 而非 input，避免逐字符触发）：
+      //   1) 清空 n.sentAudiences 中本受众的"已送达"标记，让 scheduler 在新时间窗口下重新触发
+      //   2) 自动取消「自动发送」勾选，要求运营人确认所有信息后再勾回
+      //   3) toast 提醒，避免"改了时间+其他还没改完就自动发出"的高风险场景
+      if(oldAt && newAt && oldAt !== newAt){
+        if(Array.isArray(n.sentAudiences)) n.sentAudiences = n.sentAudiences.filter(x => x !== aud);
+        // 同时清掉「失败卡死」状态：sendAttempts 归零 + status 回到 draft，让 scheduler 在新时间窗口下重新尝试
+        ac.sendAttempts = 0;
+        ac.status = 'draft';
+        ac.lastError = '';
+        delete ac._lastTriggerSig;
+        ac.autoSend = false;
+        scheduleAutoSave();
+        render();
+        toast('已修改发送时间：自动发送已暂停，请确认所有信息后再勾选「自动发送」', {tone:'warn'});
+        return;
+      }
+      scheduleAutoSave();
+    });
+    d.querySelector('[data-k="autoSend"]').addEventListener('change',e=>{ ac.autoSend=e.target.checked; scheduleAutoSave(); });
+    const ena = d.querySelector('#ena-'+n.id+'-'+aud);
+    ena.addEventListener('change',e=>{ ac.enabled=e.target.checked; scheduleAutoSave(); render(); });
+    // 录入方式切换
+    const seg = d.querySelector('[data-seg="inputMode"]');
+    seg.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        ac.inputMode = btn.dataset.mode;
+        scheduleAutoSave();
+        render();
+      });
+    });
+    const ta = d.querySelector('.aud-content');
+    ta.addEventListener('input',()=>{ ac.content=ta.value; scheduleAutoSave(); });
+    ta.addEventListener('paste', e=> handlePaste(e, ta, ac));
+    // 上传图片（点选文件 → Supabase Storage → 插入正文）
+    const uploadBtn = d.querySelector('[data-act="uploadImg"]');
+    const fileInput = d.querySelector('[data-img-input]');
+    if(uploadBtn && fileInput){
+      uploadBtn.addEventListener('click', ()=> fileInput.click());
+      fileInput.addEventListener('change', ()=>{
+        const file = fileInput.files[0]; if(!file) return;
+        if(file.size > 5*1024*1024){ toast('图片超过 5MB，请压缩后再上传'); fileInput.value=''; return; }
+        const reader = new FileReader();
+        reader.onload = async ()=>{
+          try{
+            let j;
+            if(SERVER_MODE){
+              const r = await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataUrl:reader.result})});
+              j = await r.json();
+            }else if(_sb){
+              j = await cloudUpload(reader.result);
+            }else{
+              toast('本地预览模式无法上传图片，请用本地服务'); attFileInput.value=''; return;
+            }
+            if(j && j.success){
+              const alt = prompt('图片说明（显示在图片下方，可留空）','')||'图片';
+              insertAtCursor(ta, `\n![${alt}](${j.url})\n`);
+              ac.content = ta.value; scheduleAutoSave();
+              toast('图片已插入通知正文');
+            } else { toast('上传失败：'+(j.error||'未知错误')); }
+          }catch(e){ toast('上传异常：'+e.message); }
+          fileInput.value='';
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+    // 字段下拉
+    const fieldDropdown = d.querySelector('[data-field-dropdown]');
+    if(fieldDropdown){
+      const fieldMenu = fieldDropdown.querySelector('.menu');
+      fieldDropdown.querySelector('button').addEventListener('click',(e)=>{ e.stopPropagation(); fieldMenu.classList.toggle('show'); });
+      fieldMenu.querySelectorAll('.menu-item').forEach(item=> item.addEventListener('click',()=>{ insertAtCursor(ta, item.dataset.var); ac.content=ta.value; scheduleAutoSave(); fieldMenu.classList.remove('show'); }));
+      document.addEventListener('click',(e)=>{ if(!fieldDropdown.contains(e.target)) fieldMenu.classList.remove('show'); });
+    }
+    $$('.gpick',d).forEach(cb=> cb.addEventListener('change',()=>{ ac.targetGroups = $$('.gpick:checked',d).map(x=>x.value); scheduleAutoSave(); }));
+    $$('.taskpick',d).forEach(cb=> cb.addEventListener('change',()=>{ ac.taskIds = $$('.taskpick:checked',d).map(x=>x.value); scheduleAutoSave(); }));
+    const applyTplBtn = d.querySelector('[data-act="applyTemplate"]');
+    if(applyTplBtn) applyTplBtn.addEventListener('click',()=> openTemplatePicker(stage,n,aud));
+    if(outdatedTpl){
+      d.querySelector('[data-act="keepOldTpl"]').addEventListener('click',()=>{ ac.templateAppliedAt = new Date().toISOString(); scheduleAutoSave(); render(); });
+      d.querySelector('[data-act="useNewTpl"]').addEventListener('click',()=>{ const t=getTemplateById(outdatedTpl.id); if(t){ applyTemplateToAudience(n,aud,t); scheduleAutoSave(); render(); } });
+    }
+    d.querySelector('[data-act="previewAll"]').addEventListener('click',()=> openPreviewAll(stage,n));
+    bindSplitButton(d.querySelector('[data-test-split]'), (act)=>{ if(act==='testSendCurrent') openTestSend(n,aud); else doTestSendAll(n); });
+    bindSplitButton(d.querySelector('[data-send-split]'), (act)=>{ if(act==='sendCurrent') sendNotification(stage,n,aud,false); else sendAllEnabledAudiences(stage,n,false); });
+
+    const taskWrap = d.querySelector('[data-taskwrap]');
+    let dragSrcId = null;
+    if(taskWrap){
+      $$('[data-taskid]', taskWrap).forEach(lbl=>{
+        lbl.addEventListener('dragstart', e=>{
+          dragSrcId = lbl.dataset.taskid;
+          e.dataTransfer.effectAllowed = 'move';
+          lbl.style.opacity = '0.5';
+        });
+        lbl.addEventListener('dragend', e=>{
+          lbl.style.opacity = '';
+          $$('[data-taskid]', taskWrap).forEach(x=> x.classList.remove('drag-over'));
+        });
+        lbl.addEventListener('dragover', e=>{
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          const target = e.target.closest('[data-taskid]');
+          $$('[data-taskid]', taskWrap).forEach(x=> x.classList.remove('drag-over'));
+          if(target && target.dataset.taskid !== dragSrcId) target.classList.add('drag-over');
+        });
+        lbl.addEventListener('dragleave', e=>{
+          const target = e.target.closest('[data-taskid]');
+          if(target) target.classList.remove('drag-over');
+        });
+        lbl.addEventListener('drop', e=>{
+          e.preventDefault();
+          const target = e.target.closest('[data-taskid]');
+          $$('[data-taskid]', taskWrap).forEach(x=> x.classList.remove('drag-over'));
+          if(!target || target.dataset.taskid === dragSrcId) return;
+          const currentIds = $$('[data-taskid]', taskWrap).map(x=>x.dataset.taskid);
+          const srcIdx = currentIds.indexOf(dragSrcId);
+          const tgtIdx = currentIds.indexOf(target.dataset.taskid);
+          if(srcIdx<0 || tgtIdx<0) return;
+          const newIds = currentIds.slice();
+          newIds.splice(srcIdx,1);
+          newIds.splice(tgtIdx,0,dragSrcId);
+          ac.taskOrder = newIds;
+          ac.taskIds = newIds.filter(id=> ac.taskIds.includes(id));
+          scheduleAutoSave();
+          render();
+        });
+      });
+    }
+    return d;
+  }
+  function bindSplitButton(wrap, callback){
+    if(!wrap) return;
+    const menu = wrap.querySelector('[data-menu]');
+    wrap.querySelectorAll('[data-toggle]').forEach(btn=> btn.addEventListener('click',(e)=>{ e.stopPropagation(); menu.classList.toggle('show'); }));
+    wrap.querySelectorAll('.dropdown-item').forEach(item=> item.addEventListener('click',(e)=>{ e.stopPropagation(); menu.classList.remove('show'); callback(item.dataset.act); }));
+    wrap.querySelector('button:not([data-toggle])').addEventListener('click',(e)=>{ e.stopPropagation(); menu.classList.remove('show'); callback(wrap.querySelector('button:not([data-toggle])').dataset.act); });
+    document.addEventListener('click',(e)=>{ if(!wrap.contains(e.target)) menu.classList.remove('show'); });
+  }
+  // ---------- 文案模板管理 ----------
+  function openTemplatePicker(stage, n, aud){
+    const nodeSel = $('#tplPickNode');
+    const audSel = $('#tplPickAud');
+    nodeSel.value = n.node || 'start';
+    audSel.value = aud || 'student';
+
+    function renderPickerList(){
+      const node = nodeSel.value;
+      const pickAud = audSel.value;
+      const list = getTemplates(node, pickAud);
+      const wrap = $('#templatePickerList'); wrap.innerHTML='';
+      if(list.length===0){
+        wrap.innerHTML = '<p class="sub">该节点和群类别下暂无模板，可切换筛选或到「文案模板」管理中新增。</p>';
+        return;
+      }
+      list.forEach(t=>{
+        const row = document.createElement('div'); row.className='picker-row';
+        // 提取模板使用的占位符（{{xxx}} 形式）— 用于展示模板结构
+        const varMatches = Array.from(new Set((t.content.match(/\{\{[^}]+\}\}/g) || [])));
+        const varChips = varMatches.length
+          ? `<div class="tpl-vars" style="margin-top:4px">${varMatches.map(v=>`<span class="tpl-chip">${esc(v)}</span>`).join('')}</div>`
+          : `<div class="sub" style="font-size:11px;margin-top:4px">无动态字段</div>`;
+        const previewId = 'tplPreview-' + t.id;
+        row.innerHTML = `<div style="flex:1;min-width:0">
+          <div style="font-weight:500">${esc(t.label)}</div>
+          <div class="sub" style="font-size:11px;margin-top:2px">${esc(NODE_LABEL[t.node]||t.node)} · ${esc(GROUPS_LABEL[t.audience]||t.audience)} · 更新于 ${fmtDate(t.updatedAt)} · 字段 ${varMatches.length} 个</div>
+          <div class="sub" style="font-size:11px;margin-top:2px;white-space:pre-wrap" data-preview="${previewId}">${esc(t.content.slice(0,80))}${t.content.length>80?'…':''}</div>
+          <div id="${previewId}" style="display:none;margin-top:6px">
+            <div class="tpl-preview-box">${esc(t.content)}</div>
+            <div style="margin-top:6px">${varChips}</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          ${t.content.length>80 ? `<button class="ghost mini-btn" data-toggle-preview="${previewId}">展开</button>` : ''}
+          <button class="primary mini-btn" data-act="apply">应用</button>
+        </div>`;
+        // 展开/收起全文
+        const tg = row.querySelector(`[data-toggle-preview="${previewId}"]`);
+        if(tg){
+          tg.addEventListener('click',(e)=>{
+            e.stopPropagation();
+            const box = row.querySelector('#'+previewId);
+            const shown = box.style.display !== 'none';
+            box.style.display = shown ? 'none' : 'block';
+            tg.textContent = shown ? '展开' : '收起';
+          });
+        }
+        row.querySelector('[data-act="apply"]').addEventListener('click',(e)=>{
+          e.stopPropagation();
+          if(acHasContent(n.audienceContent[aud]) && !confirm('应用模板会覆盖当前文案，是否继续？')) return;
+          n.node = t.node;
+          applyTemplateToAudience(n, aud, t);
+          scheduleAutoSave();
+          $('#templatePickerModal').classList.remove('show');
+          render();
+          toast('已应用模板：'+t.label);
+        });
+        wrap.appendChild(row);
+      });
+    }
+
+    nodeSel.onchange = renderPickerList;
+    audSel.onchange = renderPickerList;
+    renderPickerList();
+    $('#templatePickerModal').classList.add('show');
+  }
+  function acHasContent(ac){ return !!(ac && ac.content && ac.content.trim()); }
+
+  let editingTemplateId = null;
+  function openTemplateManager(){
+    editingTemplateId = null;
+    $('#templateModal').classList.add('show');
+    $('#tplEditor').style.display='none';
+    $('#tplFilterNode').value=''; $('#tplFilterAud').value=''; $('#tplSearch').value='';
+    renderTemplateList();
+    bindTemplateEditorEvents();
+  }
+  function bindTemplateEditorEvents(){
+    const once = (id,evt,fn)=>{ const el=$(id); if(el && !el._bound){ el.addEventListener(evt,fn); el._bound=true; } };
+    once('#btnNewTemplate','click',()=>{ editingTemplateId=null; showTemplateEditor(null); });
+    once('#btnTplCancel','click',()=>{ $('#tplEditor').style.display='none'; });
+    once('#btnTplSave','click',saveTemplateFromEditor);
+    once('#btnTplPreview','click',previewTemplateFromEditor);
+    once('#tplFilterNode','change',renderTemplateList);
+    once('#tplFilterAud','change',renderTemplateList);
+    once('#tplSearch','input',renderTemplateList);
+    // 模板字段下拉
+    const tplFieldDropdown = $('#tplFieldDropdown');
+    const tplFieldMenu = $('#tplFieldMenu');
+    if(tplFieldDropdown && !tplFieldDropdown._bound){
+      tplFieldDropdown.querySelector('button').addEventListener('click',(e)=>{ e.stopPropagation(); tplFieldMenu.classList.toggle('show'); });
+      tplFieldMenu.querySelectorAll('.tpl-var').forEach(item=> item.addEventListener('click',()=>{ const ta=$('#tplContent'); insertAtCursor(ta, item.dataset.var); tplFieldMenu.classList.remove('show'); }));
+      document.addEventListener('click',(e)=>{ if(!tplFieldDropdown.contains(e.target)) tplFieldMenu.classList.remove('show'); });
+      tplFieldDropdown._bound=true;
+    }
+  }
+  function showTemplateEditor(t){
+    editingTemplateId = t ? t.id : null;
+    $('#tplEditorTitle').textContent = t ? '编辑模板' : '新建模板';
+    $('#tplLabel').value = t ? t.label : '';
+    $('#tplNode').value = t ? t.node : 'start';
+    $('#tplAudience').value = t ? t.audience : 'student';
+    $('#tplContent').value = t ? t.content : '';
+    $('#tplEditor').style.display='block';
+  }
+  function saveTemplateFromEditor(){
+    const label = $('#tplLabel').value.trim();
+    const node = $('#tplNode').value;
+    const audience = $('#tplAudience').value;
+    const content = $('#tplContent').value;
+    if(!label){ toast('请填写模板名称'); return; }
+    if(!content.trim()){ toast('请填写模板内容'); return; }
+    const now = new Date().toISOString();
+    if(editingTemplateId){
+      const idx = TEMPLATES.findIndex(t=>t.id===editingTemplateId);
+      if(idx>=0) TEMPLATES[idx] = { ...TEMPLATES[idx], label, node, audience, content, updatedAt:now };
+    }else{
+      TEMPLATES.push({ id:'tpl-'+Date.now()+'-'+Math.random().toString(36).slice(2,6), label, node, audience, content, updatedAt:now });
+    }
+    saveTemplates();
+    $('#tplEditor').style.display='none';
+    renderTemplateList();
+    render(); // 刷新通知编辑区模板更新提醒
+    toast('模板已保存');
+  }
+  function previewTemplateFromEditor(){
+    const content = $('#tplContent').value;
+    if(!content.trim()){ toast('模板内容为空'); return; }
+    $('#previewTitle').textContent = '模板预览';
+    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · 目标群</div><div class="wx-body">'+renderMdPreview(content)+'</div></div>';
+    $('#previewModal').classList.add('show');
+  }
+  function deleteTemplate(id){
+    if(!confirm('确认删除该模板？已应用此模板的通知将不再收到模板更新提醒。')) return;
+    TEMPLATES = TEMPLATES.filter(t=>t.id!==id);
+    saveTemplates();
+    renderTemplateList();
+    render();
+    toast('模板已删除');
+  }
+  function renderTemplateList(){
+    const nodeFilter = $('#tplFilterNode').value;
+    const audFilter = $('#tplFilterAud').value;
+    const kw = ($('#tplSearch').value||'').trim().toLowerCase();
+    const wrap = $('#templateList'); wrap.innerHTML='';
+    const list = TEMPLATES.filter(t=>{
+      if(nodeFilter && t.node!==nodeFilter) return false;
+      if(audFilter && t.audience!==audFilter) return false;
+      if(kw && !(t.label||'').toLowerCase().includes(kw) && !(t.content||'').toLowerCase().includes(kw)) return false;
+      return true;
+    }).sort((a,b)=> new Date(b.updatedAt)-new Date(a.updatedAt));
+    if(list.length===0){ wrap.innerHTML='<div class="empty">暂无符合条件的模板</div>'; return; }
+    list.forEach(t=>{
+      const row = document.createElement('div'); row.className='group-row';
+      row.innerHTML = `<div class="name"><span class="pill ${t.audience}">${esc(GROUPS_LABEL[t.audience]||t.audience)}</span> ${esc(t.label)}<br><span class="sub">${esc(NODE_LABEL[t.node]||t.node)} · 更新于 ${fmtDate(t.updatedAt)}</span></div>
+        <div class="url" style="white-space:pre-wrap">${esc(t.content.slice(0,180))}${t.content.length>180?'...':''}</div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button class="ghost mini-btn" data-act="editTpl">编辑</button>
+          <button class="ghost danger mini-btn" data-act="delTpl">删除</button>
+        </div>`;
+      row.querySelector('[data-act="editTpl"]').addEventListener('click',()=> showTemplateEditor(t));
+      row.querySelector('[data-act="delTpl"]').addEventListener('click',()=> deleteTemplate(t.id));
+      wrap.appendChild(row);
+    });
+  }
+  function fmtDate(iso){ if(!iso) return '-'; try{ return new Date(iso).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}); }catch(e){ return iso; } }
+
+  function getProjectGroups(type){
+    const associated = (project.associatedGroupIds||[]).map(id=>globalGroups.find(g=>g.id===id)).filter(Boolean);
+    const list = associated.length ? associated : globalGroups;
+    return type ? list.filter(g=>g.type===type) : list;
+  }
+  // 受众场景下的可选群：项目关联群（如未关联则用全部），同类别置顶，其他类别其后
+  // 例如学员通知下也能选测试群，只是学员群排在前面
+  function getAudienceGroups(aud){
+    const associated = (project.associatedGroupIds||[]).map(id=>globalGroups.find(g=>g.id===id)).filter(Boolean);
+    const list = associated.length ? associated : globalGroups;
+    const same = list.filter(g=>g.type===aud);
+    const others = list.filter(g=>g.type!==aud);
+    return [...same, ...others];
+  }
+  function sortGroups(groups){
+    return groups.slice().sort((a,b)=>{
+      if(a.pinned && !b.pinned) return -1;
+      if(!a.pinned && b.pinned) return 1;
+      return (a.name||'').localeCompare(b.name||'', 'zh-CN');
+    });
+  }
+
+  // ---------- 图片粘贴上传 ----------
+  async function handlePaste(e, ta, ac){
+    const items = e.clipboardData && e.clipboardData.items;
+    if(!items) return;
+    for(const it of items){
+      if(it.type && it.type.startsWith('image/')){
+        e.preventDefault();
+        const blob = it.getAsFile();
+        const reader = new FileReader();
+        reader.onload = async ()=>{
+          let url = reader.result;
+          if(SERVER_MODE){
+            try{
+              const r = await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataUrl:reader.result, filename:'paste.png'})});
+              const j = await r.json();
+              if(j.success) url = j.url;
+            }catch(err){ }
+          }else if(_sb){
+            const j = await cloudUpload(reader.result);
+            if(j.success) url = j.url;
+          }else{
+            // 本地预览：保留 dataUrl（仅本机可见），不做云端上传
+          }
+          const alt = prompt('图片说明文字（将显示在图片下方，可留空）','')||'图片';
+          const token = `![${alt}](${url})`;
+          insertAtCursor(ta, token);
+          ac.content = ta.value; scheduleAutoSave();
+        };
+        reader.readAsDataURL(blob);
+        return;
+      }
+    }
+  }
+  function insertAtCursor(ta, text){
+    const s=ta.selectionStart, e=ta.selectionEnd;
+    ta.value = ta.value.slice(0,s)+text+ta.value.slice(e);
+    ta.selectionStart=ta.selectionEnd=s+text.length; ta.focus();
+  }
+
+  // 若地点/链接字段为纯 URL，自动转为 markdown 可点击链接
+  function linkifyUrl(text){
+    if(!text) return text;
+    const t = text.trim();
+    if(/^https?:\/\/[^\s\[\]()]+$/i.test(t)) return `[${t}](${t})`;
+    return text;
+  }
+
+  // ---------- 文案变量替换 ----------
+  function replaceVars(stage, n, aud, content, proj){
+    return RenderCore.replaceVars(stage, n, aud, content, proj || project);
+  }
+
+  // ---------- 发送 / 预览 ----------
+  function buildItemsForAudience(stage, n, aud){
+    const ac = n.audienceContent[aud];
+    if(!ac || !ac.enabled) return [];
+    const content = replaceVars(stage, n, aud, ac.content);
+    const items=[];
+    (ac.targetGroups||[]).forEach(gid=>{
+      const g = globalGroups.find(x=>x.id===gid);
+      if(g && g.webhookUrl) items.push({webhookUrl:g.webhookUrl, content:content, groupName:g.name});
+    });
+    return items;
+  }
+  async function sendNotification(stage, n, aud, testMode){
+    const items = buildItemsForAudience(stage, n, aud);
+    if(items.length===0){ toast('该版本未启用或未选择目标群'); return; }
+    if(n.status==='sent' && !confirm('该通知已发送过，确认再次发送 '+GROUPS_LABEL[aud]+'版？')) return;
+    await doSendItems(items, testMode, GROUPS_LABEL[aud]+'版');
+    if(!testMode){
+      n.status='sent';
+      n.sentAt = new Date().toISOString();
+      if(!n.sentAudiences) n.sentAudiences=[];
+      if(!n.sentAudiences.includes(aud)) n.sentAudiences.push(aud);
+      scheduleAutoSave();
+      render();
+    }
+  }
+  async function sendAllEnabledAudiences(stage, n, testMode){
+    const enabledAuds = AUDIENCES.filter(a=>n.audienceContent[a] && n.audienceContent[a].enabled);
+    if(enabledAuds.length===0){ toast('该通知没有启用任何受众版本'); return; }
+    if(n.status==='sent' && !confirm('该通知已发送过，确认再次发送全部启用受众？')) return;
+    let allItems=[];
+    enabledAuds.forEach(a=>{ allItems = allItems.concat(buildItemsForAudience(stage, n, a)); });
+    if(allItems.length===0){ toast('已启用版本均未选择目标群'); return; }
+    await doSendItems(allItems, testMode, '全部受众');
+    if(!testMode){
+      n.status='sent';
+      n.sentAt = new Date().toISOString();
+      n.sentAudiences = enabledAuds.slice();
+      scheduleAutoSave();
+      render();
+    }
+  }
+  async function doSendItems(items, testMode, label){
+    if(SERVER_MODE){
+      try{
+        const r = await fetch('/api/send-v10',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items, testMode})});
+        const j = await r.json();
+        if(j.success){ toast('发送成功：'+items.map(i=>i.groupName).join('、')); }
+        else { toast('部分失败：'+(j.results||[]).filter(x=>!x.success).map(x=>x.groupName+':'+x.error).join('；')); }
+      }catch(e){ toast('发送异常：'+e.message); }
+    }else if(_sb){
+      const j = await cloudSend(items, testMode);
+      if(j && j.success){
+        toast('发送成功：'+items.map(i=>i.groupName).join('、'));
+        if(j.fallback==='no-cors') toast('未部署 Edge Function，本次为 no-cors 直发（无企微回执），请到群里确认收到。', {tone:'warn'});
+      }
+      else { toast('发送失败：'+((j&&j.error)||'未知错误')); }
+    }else{
+      toast('本地预览模式无法发送，请在本地服务(http://localhost:8788/v10)中使用'); return;
+    }
+  }
+  function openPreview(stage, n, aud){
+    const ac = n.audienceContent[aud];
+    let content;
+    try {
+      content = replaceVars(stage, n, aud, ac?ac.content:'');
+    } catch(e){
+      content = (ac && ac.content) || '';
+      console.warn('[openPreview] replaceVars 失败:', e);
+    }
+    const _tgMatch = globalGroups.find(g=> ac && ac.targetGroups && ac.targetGroups.includes(g.id));
+    const _tgName = (_tgMatch && _tgMatch.name) || '目标群';
+    $('#previewTitle').textContent = '预览 · '+GROUPS_LABEL[aud]+'版';
+    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · '+esc(_tgName)+'</div><div class="wx-body">'+renderMdPreview(content)+'</div></div>';
+    $('#previewModal').classList.add('show');
+  }
+  function openPreviewAll(stage, n){
+    $('#previewTitle').textContent = '预览 · 全部受众版本';
+    let html = '';
+    AUDIENCES.forEach(a=>{
+      const ac = n.audienceContent[a];
+      let content;
+      try {
+        content = replaceVars(stage, n, a, ac?ac.content:'');
+      } catch(e){
+        content = (ac && ac.content) || '';
+        console.warn('[openPreviewAll] replaceVars 失败 ('+a+'):', e);
+      }
+      const status = ac.enabled ? '' : '<span class="sub">（未启用）</span>';
+      html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body">${renderMdPreview(content)}</div></div>`;
+    });
+    $('#previewBody').innerHTML = html || '<span class="sub">（无）</span>';
+    $('#previewModal').classList.add('show');
+  }
+  function renderMdPreview(md){ return RenderCore.renderMdPreview(md); }
+
+  // ---------- 测试发送 ----------
+  function openTestSend(n, aud){
+    pendingTestNotification = n;
+    pendingTestAudience = aud;
+    renderTestSendModal('发送至测试群 · '+GROUPS_LABEL[aud]+'版');
+  }
+  function openTestSendAll(n){
+    pendingTestNotification = n;
+    pendingTestAudience = null;
+    renderTestSendModal('发送至测试群 · 全部启用受众');
+  }
+  function renderTestSendModal(title){
+    const testGroups = globalGroups.filter(g=>g.type==='test');
+    const wrap = $('#testGroupList'); wrap.innerHTML='';
+    $('#testSendModalTitle').textContent = title;
+    if(testGroups.length===0){
+      wrap.innerHTML = '<p class="sub">通讯录中暂无测试群，请到「群通讯录」添加类型为「测试群」的群。</p>';
+      $('#btnDoTestSend').style.display='none';
+    }else{
+      $('#btnDoTestSend').style.display='inline-block';
+      testGroups.forEach(g=>{
+        const lbl = document.createElement('label'); lbl.className='chk';
+        lbl.innerHTML = `<input type="checkbox" class="testpick" value="${g.id}" checked> ${esc(g.name)}`;
+        wrap.appendChild(lbl);
+      });
+    }
+    $('#testSendModal').classList.add('show');
+  }
+  async function doTestSend(){
+    if(!pendingTestNotification) return;
+    const ids = $$('.testpick:checked').map(x=>x.value);
+    if(ids.length===0){ toast('请选择测试群'); return; }
+    const groups = globalGroups.filter(g=>ids.includes(g.id));
+    const stage = project.stages.find(s=>s.notifications.includes(pendingTestNotification));
+    const items=[];
+    if(pendingTestAudience){
+      const aud = pendingTestAudience;
+      const ac = pendingTestNotification.audienceContent[aud];
+      if(!ac || !ac.enabled){ toast('该受众版本未启用'); return; }
+      const content = replaceVars(stage, pendingTestNotification, aud, ac.content);
+      groups.forEach(g=> items.push({webhookUrl:g.webhookUrl, content: GROUPS_LABEL[aud]+'版\n\n'+content, groupName:g.name}));
+    }else{
+      const enabledAuds = AUDIENCES.filter(a=>pendingTestNotification.audienceContent[a] && pendingTestNotification.audienceContent[a].enabled);
+      if(enabledAuds.length===0){ toast('该通知没有启用任何受众版本'); return; }
+      enabledAuds.forEach(a=>{
+        const content = replaceVars(stage, pendingTestNotification, a, pendingTestNotification.audienceContent[a].content);
+        groups.forEach(g=> items.push({webhookUrl:g.webhookUrl, content: GROUPS_LABEL[a]+'版\n\n'+content, groupName:g.name}));
+      });
+    }
+    await doSendItems(items, true, '测试');
+    $('#testSendModal').classList.remove('show');
+    pendingTestNotification = null;
+    pendingTestAudience = null;
+  }
+
+  // ---------- 群通讯录 ----------
+  function renderGroups(){
+    const list = sortGroups(filterGroups(globalGroups));
+    const wrap = $('#groupsList'); wrap.innerHTML='';
+    // 提醒通道回填与状态
+    const rwh = $('#reminderWebhook'); if(rwh) rwh.value = appSettings.reminderWebhook||'';
+    const rstat = $('#reminderStatus');
+    if(rstat) rstat.textContent = (appSettings.reminderWebhook||'').trim() ? '当前已配置提醒通道，到点将推送企微消息。' : '当前未配置提醒通道，节点提醒仅页面「推送概览 → 临近节点」看板生效。';
+    const rbtn = $('#btnSaveReminder');
+    if(rbtn) rbtn.onclick = async ()=>{
+      appSettings.reminderWebhook = ($('#reminderWebhook').value||'').trim();
+      await saveAppSettings();
+      if(rstat) rstat.textContent = appSettings.reminderWebhook ? '已保存提醒通道。' : '已清空，节点提醒将仅走页面看板。';
+      toast('提醒通道已保存');
+    };
+    if(list.length===0){ wrap.innerHTML='<p class="sub">没有匹配的群。</p>'; return; }
+    list.forEach((g,i)=>{
+      const d=document.createElement('div'); d.className='group-row'+(g.pinned?' pinned':'');
+      d.innerHTML=`<button class="ghost mini-btn" data-pin="${g.id}" title="置顶">${g.pinned?'★':'☆'}</button>
+        <span class="pill ${g.type}">${GROUPS_LABEL[g.type]||g.type}</span>
+        <span class="name">${esc(g.name)}</span>
+        <span class="url">${esc(g.webhookUrl)}</span>
+        <button class="ghost danger mini-btn" data-del="${g.id}">删除</button>`;
+      d.querySelector('[data-pin]').addEventListener('click',()=>{ g.pinned=!g.pinned; saveGlobalGroups(); renderGroups(); if(view==='edit') render(); });
+      d.querySelector('[data-del]').addEventListener('click',()=>{ globalGroups=globalGroups.filter(x=>x.id!==g.id); saveGlobalGroups(); renderGroups(); if(view==='edit') render(); });
+      wrap.appendChild(d);
+    });
+  }
+  function filterGroups(groups){
+    const q = ($('#gSearch').value||'').toLowerCase();
+    const t = $('#gFilter').value;
+    return groups.filter(g=>{
+      if(t && g.type!==t) return false;
+      if(!q) return true;
+      return (g.name||'').toLowerCase().includes(q) || (g.webhookUrl||'').toLowerCase().includes(q);
+    });
+  }
+
+  // ---------- 关联群选择 ----------
+  let tempAssocIds = [];
+  function openAssocPicker(){
+    tempAssocIds = (project.associatedGroupIds||[]).slice();
+    renderAssocPicker();
+    $('#assocPickerModal').classList.add('show');
+  }
+  function renderAssocPicker(){
+    const q = ($('#assocPickerSearch').value||'').toLowerCase();
+    const t = $('#assocPickerFilter').value;
+    const list = sortGroups(globalGroups.filter(g=>{
+      if(t && g.type!==t) return false;
+      if(!q) return true;
+      return (g.name||'').toLowerCase().includes(q);
+    }));
+    const wrap = $('#assocPickerList'); wrap.innerHTML='';
+    if(list.length===0){ wrap.innerHTML='<p class="sub">通讯录为空或没有匹配的群。</p>'; return; }
+    list.forEach(g=>{
+      const selected = tempAssocIds.includes(g.id);
+      const row = document.createElement('div'); row.className='picker-row'+(selected?' selected':'');
+      row.innerHTML = `<input type="checkbox" ${selected?'checked':''}> <span class="pill ${g.type}">${GROUPS_LABEL[g.type]||g.type}</span> <span style="flex:1">${esc(g.name)}</span> <span class="sub">${esc(g.webhookUrl)}</span>`;
+      row.addEventListener('click',(e)=>{
+        if(e.target.tagName==='INPUT') return;
+        const cb = row.querySelector('input'); cb.checked = !cb.checked;
+        toggleAssocId(g.id, cb.checked);
+      });
+      row.querySelector('input').addEventListener('change',(e)=> toggleAssocId(g.id, e.target.checked));
+      wrap.appendChild(row);
+    });
+  }
+  function toggleAssocId(id, checked){
+    if(checked && !tempAssocIds.includes(id)) tempAssocIds.push(id);
+    if(!checked) tempAssocIds = tempAssocIds.filter(x=>x!==id);
+    renderAssocPicker();
+  }
+  function confirmAssocPicker(){
+    project.associatedGroupIds = tempAssocIds.slice();
+    render(); scheduleAutoSave();
+    $('#assocPickerModal').classList.remove('show');
+  }
+
+  // ---------- 推送概览 ----------
+  // 辅助：推送概览「行级状态」实时计算（不依赖 n.lastError，避免和 scheduler 写入脱节导致误判）
+  // 输入：通知 n + 受众 aud
+  // 输出：{ status, err, sentAt }  status ∈ sent | skipped | draft
+  function computeRowStatus(n, aud){
+    const ac = n.audienceContent && n.audienceContent[aud];
+    if(!ac) return { status:'draft', err:'', sentAt:'' };
+    // 已发送：由 n.sentAudiences 包含 aud 决定
+    if(Array.isArray(n.sentAudiences) && n.sentAudiences.includes(aud)){
+      return { status:'sent', err:'', sentAt:n.sentAt||'' };
+    }
+    // 已暂停：运营人改过时间/文案，自动发送被取消且未重新勾选 → 区分"草稿"避免误判
+    if(ac.enabled && ac.autoSend===false && ac.notifyAt){
+      return { status:'paused', err:'自动发送已暂停', sentAt:'' };
+    }
+    const at = ac.notifyAt;
+    if(at){
+      const t = new Date(at);
+      if(!isNaN(t.getTime())){
+        const diff = Date.now() - t.getTime();
+        // 过期超过 24h 窗口 → 标 skipped
+        if(diff > 24*3600*1000){
+          return { status:'skipped', err:'发送时间已超过 24h，自动跳过', sentAt:'' };
+        }
+      }
+    }
+    // 其他情况（未到点 / 未设置时间 / 有时间但未选群 / 正常草稿）统一显示草稿，不写误引导的 err
+    return { status:'draft', err:'', sentAt:'' };
+  }
+
+  // 辅助：取通知下启用受众的最早发送时间（数据模型中 notifyAt 在 audienceContent 内）
+  function getNotificationNotifyAt(n){
+    const times = ['student','lecturer','manager']
+      .map(a => n.audienceContent && n.audienceContent[a] && n.audienceContent[a].enabled ? n.audienceContent[a].notifyAt : null)
+      .filter(Boolean);
+    return times.sort()[0] || null;
+  }
+  // 辅助：构建推送概览表格行（按受众展开），按发送时间升序
+  function buildOverviewRows(singleProject){
+    const rows=[];
+    let source;
+    if(singleProject){
+      // 优先从 projects[] 取最新副本（避免 project 全局变量陈旧导致两处视图不一致）
+      source = (projects||[]).filter(p=>p.id===currentProjectId);
+      if(source.length===0 && project) source = [project];
+    } else {
+      source = (projects||[]).map(p=>p);
+    }
+    source.forEach(p=>{
+      (p.stages||[]).forEach(s=>{
+        (s.notifications||[]).forEach(n=>{
+          AUDIENCES.forEach(a=>{
+            const ac = n.audienceContent && n.audienceContent[a];
+            // 停用项（ac.enabled=false）不展开为概览行：避免把"不会真发"的项混进"推送概览"
+            if(ac && ac.enabled){
+              const row = computeRowStatus(n, a);
+              rows.push({key:`${p.id||''}::${s.id}::${n.id}::${a}`, pid:p.id||'', sid:s.id, nid:n.id, aud:a, proj:(p.projectName||p.name)||'未命名项目', stage:s.name||'阶段', notif:n.name||'通知', audLabel:GROUPS_LABEL[a], enabled:!!ac.enabled, content:(ac.content||''), time:ac.notifyAt||'', status:row.status, sentAt:row.sentAt, err:row.err, targets:(ac.targetGroups||[]).map(id=>(globalGroups.find(g=>g.id===id)||{}).name).filter(Boolean).join('、')});
+            }
+          });
+        });
+      });
+    });
+    // 排序规则：1) 已发送整体置后于未发送；2) 已发送内按实际发送时间 sentAt 倒序（最新在前）；3) 未发送内按发送时间 time 升序，未设定置后
+    rows.sort(compareOverviewRows);
+    return rows;
+  }
+  function compareOverviewRows(a, b){
+    const aSent = a.status === 'sent';
+    const bSent = b.status === 'sent';
+    if(aSent && !bSent) return 1;       // 已发送置后
+    if(!aSent && bSent) return -1;
+    if(aSent && bSent){
+      return (b.sentAt||'').localeCompare(a.sentAt||'');
+    }
+    if(!a.time && !b.time) return 0;
+    if(!a.time) return 1;                // 未设定发送时间置后
+    if(!b.time) return -1;
+    return a.time.localeCompare(b.time);
+  }
+  // 辅助：构建临近节点（未来7天及近7天已过期未发送），按临近程度升序
+  // 修复：移除"已发送则跳过"逻辑——已发但仍在今日/明日的节点应保留显示并打"已发"标识，
+  //       否则 Action 9:46 跑完 9:44 通知后 status=sent，节点直接消失给用户"被吞"的错觉。
+  function buildUpcomingNodes(singleProject){
+    const WINDOW = 7*24*60*60*1000;
+    const upcoming=[];
+    let source;
+    if(singleProject){
+      source = (projects||[]).filter(p=>p.id===currentProjectId);
+      if(source.length===0 && project) source = [project];
+    } else {
+      source = (projects||[]).map(p=>p);
+    }
+    const now = new Date();
+    source.forEach(p=>{
+      (p.stages||[]).forEach(s=>{
+        (s.notifications||[]).forEach(n=>{
+          // 不再因为 n.status==='sent' 直接 return；已发但仍在今日/明日窗口的仍显示
+          const notifyAt = getNotificationNotifyAt(n);
+          if(!notifyAt) return;
+          const nt=new Date(notifyAt);
+          if(isNaN(nt.getTime())) return;
+          const diff=nt.getTime()-now.getTime();
+          if(diff < -WINDOW) return;        // 超过过去 7 天未发 才隐藏
+          const t1=new Date(nt.getTime()-24*60*60*1000);
+          const t2=new Date(nt.getTime()-2*60*60*1000);
+          const auds=['student','lecturer','manager'].filter(a=>n.audienceContent&&n.audienceContent[a]&&n.audienceContent[a].enabled).map(a=>GROUPS_LABEL[a]||a).join('、')||'（未设置受众）';
+          const r1 = n.reminder1dSentAt ? 'done' : (now>=t1 && now<nt ? 'due' : 'wait');
+          const r2 = n.reminder2hSentAt ? 'done' : (now>=t2 && now<nt ? 'due' : 'wait');
+          // 是否所有启用受众都已发送
+          const enabledAuds = ['student','lecturer','manager'].filter(a=>n.audienceContent&&n.audienceContent[a]&&n.audienceContent[a].enabled);
+          const sentAuds = Array.isArray(n.sentAudiences) ? n.sentAudiences : [];
+          const allSent = enabledAuds.length>0 && enabledAuds.every(a=>sentAuds.includes(a));
+          upcoming.push({proj:(p.projectName||p.name)||'未命名项目', stage:s.name||'阶段', notif:n.name||'通知', time:notifyAt, diff, auds, r1, r2, pid:p.id||'', nid:n.id, sid:s.id, allSent, sentAt:n.sentAt||''});
+        });
+      });
+    });
+    upcoming.sort((a,b)=>a.diff-b.diff);
+    return upcoming;
+  }
+
+  // 辅助：渲染临近节点卡片（支持空状态）
+  function renderUpcomingCard(upcoming, singleProject){
+    const uc = document.createElement('div'); uc.className='card';
+    uc.innerHTML = `<h3>临近节点（未来 7 天）</h3>`;
+    if(upcoming.length===0){
+      uc.innerHTML += '<p class="sub">暂无临近节点（未来 7 天内无待发送通知）。</p>';
+      return uc;
+    }
+    const fmtCountdown=(ms)=>{
+      if(ms<=0) return '已到期';
+      const tot=Math.floor(ms/60000); const d=Math.floor(tot/1440); const h=Math.floor((tot%1440)/60); const m=tot%60;
+      if(d>0) return `剩 ${d}天${h}小时`;
+      if(h>0) return `剩 ${h}小时${m}分`;
+      return `剩 ${m}分`;
+    };
+    const rPill=(st)=> st==='done'?'<span class="pill sent">已提醒</span>':st==='due'?'<span class="pill soon">待发</span>':'<span class="pill draft">未到</span>';
+    // 已发节点：把"倒计时"列换成"已发"标识，避免显示负数倒计时；同时显示实际发送时间（取 HH:MM）
+    const fmtSentTime = (iso) => {
+      if(!iso) return '';
+      const d = new Date(iso);
+      if(isNaN(d.getTime())) return '';
+      return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    };
+    const sentBadge = (u) => {
+      if(!u.allSent) return '';
+      const t = fmtSentTime(u.sentAt);
+      return `<span class="pill sent">${t ? t + ' 已发' : '已发'}</span>`;
+    };
+    const ut=document.createElement('table');
+    const uh = singleProject
+      ? '<tr><th>状态</th><th>阶段</th><th>通知</th><th>发送时间</th><th>受众</th><th>提前1天</th><th>提前2小时</th></tr>'
+      : '<tr><th>状态</th><th>项目</th><th>阶段</th><th>通知</th><th>发送时间</th><th>受众</th><th>提前1天</th><th>提前2小时</th></tr>';
+    ut.innerHTML = uh + upcoming.map(u=>{
+      const timeCell = `<span>${esc(u.time)}</span>`;
+      const statusCell = u.allSent ? sentBadge(u) : `<span class="countdown ${u.diff<=2*3600*1000?'urgent':''}">${fmtCountdown(u.diff)}</span>`;
+      if(singleProject){
+        return `<tr class="upcoming-row" data-pid="${esc(u.pid)}" data-nid="${esc(u.nid)}" style="cursor:pointer"><td>${statusCell}</td><td>${esc(u.stage)}</td><td>${esc(u.notif)}</td><td>${timeCell}</td><td>${esc(u.auds)}</td><td>${rPill(u.r1)}</td><td>${rPill(u.r2)}</td></tr>`;
+      }
+      return `<tr class="upcoming-row" data-pid="${esc(u.pid)}" data-nid="${esc(u.nid)}" style="cursor:pointer"><td>${statusCell}</td><td>${esc(u.proj)}</td><td>${esc(u.stage)}</td><td>${esc(u.notif)}</td><td>${timeCell}</td><td>${esc(u.auds)}</td><td>${rPill(u.r1)}</td><td>${rPill(u.r2)}</td></tr>`;
+    }).join('');
+    uc.appendChild(ut);
+    return uc;
+  }
+
+  // 主入口：按 singleProject 分派到两个独立视图，避免互相影响
+  function buildOverviewPanel(singleProject){
+    return singleProject ? buildProjectOverviewPanel() : buildGlobalOverviewPanel();
+  }
+
+  // 全局推送概览（主界面）：只读 + 分页 + 临近节点置顶
+  function buildGlobalOverviewPanel(){
+    const rows = buildOverviewRows(false);
+    const totalRows = rows.length;
+    const PAGE_SIZE = 15;
+    const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
+    if(overviewPage > totalPages) overviewPage = totalPages;
+    if(overviewPage < 1) overviewPage = 1;
+    const startIdx = (overviewPage - 1) * PAGE_SIZE;
+    const pagedRows = rows.slice(startIdx, startIdx + PAGE_SIZE);
+
+    const frag = document.createDocumentFragment();
+    const upcoming = buildUpcomingNodes(false);
+
+    // 临近节点置顶（空状态也显示功能区）
+    frag.appendChild(renderUpcomingCard(upcoming, false));
+
+    // 推送概览表格
+    const card = document.createElement('div'); card.className='card';
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0,10);
+    const tomorrow = new Date(now.getTime()+24*60*60*1000).toISOString().slice(0,10);
+    card.innerHTML = `<h3>推送概览</h3>`;
+    if(rows.length===0){ card.innerHTML += '<p class="sub">暂无通知。</p>'; }
+    else {
+      const note = document.createElement('p'); note.className='sub'; note.style.margin='8px 0 0';
+      note.textContent = '全局视图：跨项目的批量操作请在对应项目内执行，点击项目名可进入项目。';
+      card.appendChild(note);
+    }
+    const table = document.createElement('table'); table.id='overviewTable';
+    table.innerHTML = '<tr><th>项目</th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>' +
+      pagedRows.map(r=>{
+        let mark = '';
+        if(r.time && r.status!=='sent'){
+          const d = r.time.slice(0,10);
+          if(d===todayStr) mark = '<span class="pill today">今天</span>';
+          else if(d===tomorrow) mark = '<span class="pill soon">明天</span>';
+        }
+        const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
+        const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
+        const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
+        const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
+        const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
+        const projCell = `${esc(r.proj)}`;
+        return `<tr class="ov-row" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer"><td>${projCell}</td><td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
+      }).join('');
+    card.appendChild(table);
+
+    if(totalRows > PAGE_SIZE){
+      const pager = document.createElement('div'); pager.className='pager'; pager.style.cssText='display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px;font-size:13px';
+      pager.innerHTML = `<span class="sub">共 ${totalRows} 条，第 ${overviewPage}/${totalPages} 页</span>
+        <button class="ghost" ${overviewPage<=1?'disabled':''} id="ovPrevPage">上一页</button>
+        <button class="ghost" ${overviewPage>=totalPages?'disabled':''} id="ovNextPage">下一页</button>`;
+      card.appendChild(pager);
+    }
+    frag.appendChild(card);
+
+    // 事件绑定
+    if(rows.length>0){
+      $$('.ov-row', card).forEach(tr=> tr.addEventListener('click',(e)=>{
+        const r = rows.find(x=>x.key===tr.dataset.key);
+        if(r) openOverviewPopup(r);
+      }));
+      const prev = $('#ovPrevPage', card);
+      const next = $('#ovNextPage', card);
+      if(prev) prev.addEventListener('click',()=>{ if(overviewPage>1){ overviewPage--; render(); } });
+      if(next) next.addEventListener('click',()=>{ if(overviewPage<totalPages){ overviewPage++; render(); } });
+    }
+    if(upcoming.length>0){ $$('.upcoming-row', frag).forEach(tr=> tr.addEventListener('click',()=>{ const pid=tr.dataset.pid, nid=tr.dataset.nid; const u=upcoming.find(x=>x.pid===pid&&x.nid===nid); if(u) openUpcomingPopup(u); })); }
+    return frag;
+  }
+
+  // 项目内推送概览：临近节点置顶 + 批量操作
+  function buildProjectOverviewPanel(){
+    const rows = buildOverviewRows(true);
+    const totalRows = rows.length;
+    const PAGE_SIZE = Math.max(totalRows, 1);
+    const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
+    if(overviewPage > totalPages) overviewPage = totalPages;
+    if(overviewPage < 1) overviewPage = 1;
+    const startIdx = (overviewPage - 1) * PAGE_SIZE;
+    const pagedRows = rows.slice(startIdx, startIdx + PAGE_SIZE);
+
+    const frag = document.createDocumentFragment();
+    const upcoming = buildUpcomingNodes(true);
+
+    // 临近节点置顶（空状态也显示功能区）
+    frag.appendChild(renderUpcomingCard(upcoming, true));
+
+    // 推送概览表格
+    const card = document.createElement('div'); card.className='card';
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0,10);
+    const tomorrow = new Date(now.getTime()+24*60*60*1000).toISOString().slice(0,10);
+    card.innerHTML = `<h3>推送概览</h3>`;
+    if(rows.length===0){ card.innerHTML += '<p class="sub">暂无通知。</p>'; }
+    else {
+      const bulkbar = document.createElement('div'); bulkbar.className='bulkbar';
+      bulkbar.innerHTML = `<input type="checkbox" id="ovSelectAll" class="ov-checkbox" title="全选">
+        <span class="bulkcount">已选 0 项</span>
+        <button class="ghost" id="ovBulkEnable" disabled>启用</button>
+        <button class="ghost" id="ovBulkDisable" disabled>停用</button>
+        <button class="ghost" id="ovBulkTime" disabled>改时间</button>
+        <button class="ghost danger" id="ovBulkDelete" disabled>删除</button>
+        <button class="primary" id="ovBulkGenerate">批量生成通知</button>`;
+      card.appendChild(bulkbar);
+    }
+    const table = document.createElement('table'); table.id='overviewTable';
+    table.innerHTML = '<tr><th style="width:30px"><input type="checkbox" id="ovHeadCheck" class="ov-checkbox" title="全选"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>' +
+      pagedRows.map(r=>{
+        let mark = '';
+        if(r.time && r.status!=='sent'){
+          const d = r.time.slice(0,10);
+          if(d===todayStr) mark = '<span class="pill today">今天</span>';
+          else if(d===tomorrow) mark = '<span class="pill soon">明天</span>';
+        }
+        const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
+        const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
+        const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
+        const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
+        const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
+        const chk = `<td><input type="checkbox" class="ov-checkbox ov-row-check" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}"></td>`;
+        return `<tr class="ov-row" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer">${chk}<td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
+      }).join('');
+    card.appendChild(table);
+    frag.appendChild(card);
+
+    // 批量操作事件
+    if(rows.length>0){
+      $$('.ov-row', card).forEach(tr=> tr.addEventListener('click',(e)=>{
+        if(e.target.closest('.ov-row-check')) return;
+        const r = rows.find(x=>x.key===tr.dataset.key);
+        if(r) openOverviewPopup(r);
+      }));
+      const headCheck = $('#ovHeadCheck', card);
+      const selectAll = $('#ovSelectAll', card);
+      const updateCount = ()=>{
+        const checked = $$('.ov-row-check:checked', card);
+        const count = checked.length;
+        $('.bulkcount', card).textContent = `已选 ${count} 项`;
+        $('#ovBulkEnable', card).disabled = count===0;
+        $('#ovBulkDisable', card).disabled = count===0;
+        $('#ovBulkTime', card).disabled = count===0;
+        $('#ovBulkDelete', card).disabled = count===0;
+        $$('.ov-row', card).forEach(tr=> tr.classList.remove('selected'));
+        checked.forEach(cb=> cb.closest('tr').classList.add('selected'));
+      };
+      const toggleAll = (checked)=>{ $$('.ov-row-check', card).forEach(cb=> cb.checked=checked); updateCount(); };
+      if(headCheck) headCheck.addEventListener('change',()=> toggleAll(headCheck.checked));
+      if(selectAll) selectAll.addEventListener('change',()=> toggleAll(selectAll.checked));
+      card.addEventListener('change',(e)=>{ if(e.target.classList.contains('ov-row-check')) updateCount(); });
+      $('#ovBulkEnable', card).addEventListener('click',()=> bulkEnable(true));
+      $('#ovBulkDisable', card).addEventListener('click',()=> bulkEnable(false));
+      $('#ovBulkDelete', card).addEventListener('click', bulkDelete);
+      $('#ovBulkTime', card).addEventListener('click', openBulkTimeModal);
+      $('#ovBulkGenerate', card).addEventListener('click', openBulkGenerateModal);
+    }
+    if(upcoming.length>0){ $$('.upcoming-row', frag).forEach(tr=> tr.addEventListener('click',()=>{ const pid=tr.dataset.pid, nid=tr.dataset.nid; const u=upcoming.find(x=>x.pid===pid&&x.nid===nid); if(u) openUpcomingPopup(u); })); }
+    return frag;
+  }
+
+  function getSelectedOverviewRows(){
+    const table = $('#overviewTable');
+    if(!table) return [];
+    return $$('.ov-row-check:checked', table).map(cb=>({pid:cb.dataset.pid, sid:cb.dataset.sid, nid:cb.dataset.nid, aud:cb.dataset.aud, key:cb.dataset.key}));
+  }
+  function findAudienceConfig(sel){
+    const p = (sel.pid ? projects.find(x=>x.id===sel.pid) : project);
+    if(!p) return null;
+    const s = (p.stages||[]).find(x=>x.id===sel.sid);
+    if(!s) return null;
+    const n = (s.notifications||[]).find(x=>x.id===sel.nid);
+    if(!n || !n.audienceContent) return null;
+    return {p, s, n, ac:n.audienceContent[sel.aud]};
+  }
+  // 弹窗：显示通知/临近节点详情，可跳转设置
+  function showDetailModal(title, bodyHtml, onOpen){
+    const old = document.getElementById('ovDetailMask'); if(old) old.remove();
+    const mask = document.createElement('div'); mask.className='modal-mask show'; mask.id='ovDetailMask';
+    mask.innerHTML = `<div class="modal" style="max-width:560px">
+      <h3>${title}</h3>
+      <div class="ov-detail-body">${bodyHtml}</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+        <button class="ghost" id="ovDetailClose">关闭</button>
+        <button class="primary" id="ovDetailOpen">打开设置</button>
+      </div>
+    </div>`;
+    document.body.appendChild(mask);
+    mask.addEventListener('click',(e)=>{ if(e.target===mask) mask.remove(); });
+    mask.querySelector('#ovDetailClose').addEventListener('click',()=> mask.remove());
+    mask.querySelector('#ovDetailOpen').addEventListener('click',()=>{ mask.remove(); if(onOpen) onOpen(); });
+  }
+  // 跳转并定位到某通知的设置（编辑视图-通知列表）
+  function jumpToNotification(pid, nid){
+    const doScroll = ()=>{
+      const p = (projects.find(x=>x.id===pid)) || project;
+      if(p){ (p.stages||[]).forEach(s=>{ (s.notifications||[]).forEach(n=>{ if(n.id===nid){ s.collapsed=false; n.collapsed=false; } }); }); }
+      const el = document.getElementById('notif-'+nid);
+      if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+    };
+    if(view!=='edit' || (project && project.id!==pid)){
+      setView('edit', pid);
+      editSection='notifs';
+      setTimeout(doScroll, 250);
+    } else {
+      setEditSection('notifs');
+      setTimeout(doScroll, 90);
+    }
+  }
+  function openOverviewPopup(r){
+    const statusTxt = r.status==='sent'?'已发送':r.status==='failed'?'失败':r.status==='skipped'?'已跳过':'草稿';
+    const enabledTxt = r.enabled ? '启用' : '已停用';
+    const found = findAudienceConfig(r);
+    let previewHtml = '<span style="color:#8a8f99">（无文案）</span>';
+    if(found && found.ac && found.ac.content){
+      try {
+        // 关键：详情弹窗里可能跨项目预览，必须把对应 p 传进 replaceVars，
+        // 否则「项目名/负责人/培训目的/项目描述/整体安排/项目开始/项目结束」会取到当前编辑项目的值，导致显示「《未命名项目》」之类。
+        const replaced = replaceVars(found.s, found.n, r.aud, found.ac.content, found.p);
+        previewHtml = renderMdPreview(replaced);
+      } catch(e){
+        previewHtml = esc(found.ac.content); // 渲染异常时回退为原文
+      }
+    }
+    const body = `
+      <div class="kv"><span>项目</span><b>${esc(r.proj)}</b></div>
+      <div class="kv"><span>阶段</span><b>${esc(r.stage)}</b></div>
+      <div class="kv"><span>通知</span><b>${esc(r.notif)}</b></div>
+      <div class="kv"><span>受众</span><b>${esc(r.audLabel)}（${enabledTxt}）</b></div>
+      <div class="kv"><span>目标群</span><b>${esc(r.targets||'(未选群)')}</b></div>
+      <div class="kv"><span>发送时间</span><b>${esc(r.time||'未设定')}</b></div>
+      <div class="kv"><span>状态</span><b>${statusTxt}</b></div>
+      ${r.sentAt?`<div class="kv"><span>实际发送</span><b>${esc(r.sentAt)}</b></div>`:''}
+      ${r.err?`<div class="kv"><span>失败原因</span><b style="color:#e5484d">${esc(r.err)}</b></div>`:''}
+      <div class="kv" style="flex-direction:column;align-items:stretch">
+        <span>文案预览</span>
+        <div class="preview-box wx-body">${previewHtml}</div>
+      </div>`;
+    showDetailModal('通知详情', body, ()=> jumpToNotification(r.pid, r.nid));
+  }
+  function openUpcomingPopup(u){
+    const pill = (st)=> st==='done'?'已提醒':st==='due'?'待发':'未到';
+    const body = `
+      <div class="kv"><span>项目</span><b>${esc(u.proj)}</b></div>
+      <div class="kv"><span>阶段</span><b>${esc(u.stage)}</b></div>
+      <div class="kv"><span>通知</span><b>${esc(u.notif)}</b></div>
+      <div class="kv"><span>发送时间</span><b>${esc(u.time)}</b></div>
+      <div class="kv"><span>受众</span><b>${esc(u.auds)}</b></div>
+      <div class="kv"><span>提前1天</span><b>${pill(u.r1)}</b></div>
+      <div class="kv"><span>提前2小时</span><b>${pill(u.r2)}</b></div>`;
+    showDetailModal('临近节点详情', body, ()=> jumpToNotification(u.pid, u.nid));
+  }
+  function bulkEnable(enable){
+    const rows = getSelectedOverviewRows();
+    let changed=0;
+    rows.forEach(sel=>{
+      const r = findAudienceConfig(sel);
+      if(r && r.ac && r.ac.enabled!==enable){ r.ac.enabled=enable; changed++; }
+    });
+    if(changed===0){ toast('选中项状态已是'+(enable?'启用':'停用')+'，无需操作'); return; }
+    scheduleAutoSave(); render();
+    toast(`已${enable?'启用':'停用'} ${changed} 条受众通知`);
+  }
+  function bulkDelete(){
+    const rows = getSelectedOverviewRows();
+    if(rows.length===0) return;
+    const nids = [...new Set(rows.map(r=>r.nid))];
+    if(!confirm(`确认删除选中的 ${rows.length} 条受众配置对应的 ${nids.length} 条通知？\n（同一通知下多个受众会被整行删除）`)) return;
+    let deleted=0;
+    rows.forEach(sel=>{
+      const r = findAudienceConfig(sel);
+      if(r && r.n){
+        const idx = r.s.notifications.findIndex(x=>x.id===r.n.id);
+        if(idx>-1){ r.s.notifications.splice(idx,1); deleted++; }
+      }
+    });
+    scheduleAutoSave(); render();
+    toast(`已删除 ${deleted} 条通知`);
+  }
+
+  function openBulkTimeModal(){
+    const rows = getSelectedOverviewRows();
+    if(rows.length===0) return;
+    const hasTime = rows.filter(sel=>{ const r=findAudienceConfig(sel); return r && r.ac && r.ac.notifyAt; }).length;
+    $('#bulkTimeSub').textContent = `已选 ${rows.length} 条受众通知，其中 ${hasTime} 条已设发送时间`;
+    const preview = ()=>{
+      const mode = document.querySelector('input[name="bulkTimeMode"]:checked').value;
+      const txt = mode==='offset'
+        ? `将把 ${hasTime} 条已设时间的通知按「${$('#bulkTimeOffset').value}${$('#bulkTimeUnit option:checked').text}」整体偏移`
+        : `将把 ${hasTime} 条已设时间的通知统一设为「${$('#bulkTimeAbsolute').value || '未选择'}」`;
+      $('#bulkTimePreview').textContent = txt;
+    };
+    $$('input[name="bulkTimeMode"]').forEach(r=> r.addEventListener('change', preview));
+    $('#bulkTimeOffset').addEventListener('input', preview);
+    $('#bulkTimeUnit').addEventListener('change', preview);
+    $('#bulkTimeAbsolute').addEventListener('input', preview);
+    preview();
+    const apply = ()=>{
+      const mode = document.querySelector('input[name="bulkTimeMode"]:checked').value;
+      let changed=0, skipped=0;
+      rows.forEach(sel=>{
+        const r = findAudienceConfig(sel);
+        if(!r || !r.ac) return;
+        if(mode==='offset'){
+          if(!r.ac.notifyAt){ skipped++; return; }
+          const dt = new Date(r.ac.notifyAt); if(isNaN(dt.getTime())){ skipped++; return; }
+          const val = parseFloat($('#bulkTimeOffset').value)||0;
+          const unit = $('#bulkTimeUnit').value;
+          const ms = unit==='day'?val*86400000:unit==='hour'?val*3600000:val*60000;
+          r.ac.notifyAt = new Date(dt.getTime()+ms).toISOString().slice(0,16);
+          changed++;
+        } else {
+          const v = $('#bulkTimeAbsolute').value;
+          if(!v){ toast('请先选择绝对时间'); return; }
+          r.ac.notifyAt = v;
+          changed++;
+        }
+      });
+      scheduleAutoSave(); render(); $('#bulkTimeModal').classList.remove('show');
+      toast(`已修改 ${changed} 条${skipped?('，跳过 '+skipped+' 条未设时间'):''}`);
+    };
+    const btn = $('#btnBulkTimeApply');
+    const newBtn = btn.cloneNode(true); btn.parentNode.replaceChild(newBtn, btn);
+    newBtn.addEventListener('click', apply);
+    $('#bulkTimeModal').classList.add('show');
+  }
+
+  function openBulkGenerateModal(){
+    const p = project;
+    const stages = (p && p.stages)||[];
+    const wrap = $('#bulkGenerateModal');
+    // 阶段列表
+    const stageBox = $('#bulkGenStages');
+    stageBox.innerHTML = stages.map((s,i)=>`<label style="display:block;margin:4px 0;cursor:pointer"><input type="checkbox" class="bulkgen-stage" value="${s.id}" checked> ${esc(s.name||('阶段'+(i+1)))}</label>`).join('');
+    if(stages.length===0) stageBox.innerHTML='<p class="sub">当前项目没有阶段，请先在「通知列表」添加阶段。</p>';
+    // 来源选项
+    const allNotifs = [];
+    stages.forEach(s=> (s.notifications||[]).forEach(n=> allNotifs.push({sid:s.id, nid:n.id, label:`${s.name||'阶段'} / ${n.name||'未命名通知'}`, n})));
+    const copySel = $('#bulkGenCopyFrom');
+    copySel.innerHTML = allNotifs.map(x=>`<option value="${x.nid}">${esc(x.label)}</option>`).join('') || '<option value="">无现有通知</option>';
+    const sourceSel = $('#bulkGenSource');
+    // 模板列表（按节点分组）
+    const tplSel = $('#bulkGenTemplate');
+    const renderTplOptions = ()=>{
+      const nodes = [...new Set(TEMPLATES.map(t=>t.node))];
+      if(TEMPLATES.length===0){
+        tplSel.innerHTML = '<option value="">暂无模板，请到「文案模板」管理</option>';
+        return;
+      }
+      tplSel.innerHTML = nodes.map(node=>{
+        const list = TEMPLATES.filter(t=>t.node===node);
+        return `<optgroup label="${esc(NODE_LABEL[node]||node)}">` + list.map(t=>`<option value="${t.id}">${esc(GROUPS_LABEL[t.audience]||t.audience)} · ${esc(t.label||'未命名')}</option>`).join('') + '</optgroup>';
+      }).join('');
+    };
+    renderTplOptions();
+    const toggleSource = ()=>{
+      const isCopy = sourceSel.value==='copy';
+      $('#bulkGenTplBox').style.display = isCopy?'none':'block';
+      $('#bulkGenCopyBox').style.display = isCopy?'block':'none';
+    };
+    sourceSel.addEventListener('change', toggleSource);
+    toggleSource();
+    const ruleSel = $('#bulkGenTimeRule');
+    ruleSel.addEventListener('change',()=>{ $('#bulkGenOffsetRow').style.display = ruleSel.value==='none'?'none':'flex'; });
+    $('#bulkGenOffsetRow').style.display = ruleSel.value==='none'?'none':'flex';
+    const apply = ()=>{
+      const sids = $$('.bulkgen-stage:checked').map(cb=>cb.value);
+      if(sids.length===0){ toast('请至少选择一个目标阶段'); return; }
+      const source = sourceSel.value;
+      const rule = ruleSel.value;
+      const offsetVal = parseFloat($('#bulkGenOffset').value)||0;
+      const unit = $('#bulkGenUnit').value;
+      let sourceN = null;
+      let sourceTpl = null;
+      if(source==='copy'){
+        const nid = $('#bulkGenCopyFrom').value;
+        if(!nid){ toast('没有可复制的现有通知'); return; }
+        stages.forEach(s=> (s.notifications||[]).forEach(n=>{ if(n.id===nid) sourceN=n; }));
+      } else {
+        const tid = $('#bulkGenTemplate').value;
+        if(!tid){ toast('请先选择文案模板'); return; }
+        sourceTpl = getTemplateById(tid);
+        if(!sourceTpl){ toast('所选模板不存在'); return; }
+      }
+      let created=0;
+      sids.forEach(sid=>{
+        const st = stages.find(s=>s.id===sid); if(!st) return;
+        const n = defaultNotification();
+        if(source==='copy' && sourceN){
+          n.name = sourceN.name || '复制通知';
+          n.node = sourceN.node;
+          AUDIENCES.forEach(a=>{
+            const src = sourceN.audienceContent[a];
+            if(src){
+              n.audienceContent[a] = JSON.parse(JSON.stringify(src));
+              n.audienceContent[a].enabled = src.enabled;
+            }
+          });
+        } else if(sourceTpl){
+          n.name = sourceTpl.label || '通知';
+          n.node = sourceTpl.node;
+          AUDIENCES.forEach(a=>{
+            n.audienceContent[a].enabled = (a === sourceTpl.audience);
+          });
+          applyTemplateToAudience(n, sourceTpl.audience, sourceTpl);
+        }
+        // 时间规则
+        if(rule!=='none' && (st.startDate || st.endDate)){
+          const base = rule.includes('Start') ? (st.startDate||st.endDate) : (st.endDate||st.startDate);
+          const baseTime = base + 'T00:00';
+          const dt = new Date(baseTime); if(!isNaN(dt.getTime())){
+            const ms = unit==='day'?offsetVal*86400000:offsetVal*3600000;
+            const sign = (rule.startsWith('before')) ? -1 : 1;
+            const final = new Date(dt.getTime()+sign*ms);
+            AUDIENCES.forEach(a=>{ if(n.audienceContent[a].enabled) n.audienceContent[a].notifyAt = final.toISOString().slice(0,16); });
+          }
+        }
+        st.notifications.push(n); created++;
+      });
+      scheduleAutoSave(); render(); wrap.classList.remove('show');
+      toast(`已生成 ${created} 条通知`);
+    };
+    const btn = $('#btnBulkGenApply');
+    const newBtn = btn.cloneNode(true); btn.parentNode.replaceChild(newBtn, btn);
+    newBtn.addEventListener('click', apply);
+    wrap.classList.add('show');
+  }
+
+  // ---------- 智能识别 ----------
+  function doParse(){
+    const text = $('#parseInput').value.trim();
+    if(!text){ toast('请粘贴培训方案文本'); return; }
+    const newStages = parseTrainingPlan(text);
+    if(newStages.length===0){ toast('未能识别出阶段，请检查文本格式'); return; }
+    renderParsePreview($('#parseResult'), newStages);
+    project._parseDraft = { text, results: newStages };
+    scheduleAutoSave();
+  }
+  function parseTrainingPlan(text){
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length>0);
+    const stages=[];
+    let curStage=null;
+    const tableRows = parseTable(lines);
+
+    if(tableRows.length>=1){
+      tableRows.forEach(parts=>{
+        const stageName = parts[0]||'';
+        const timeText = parts[1]||'';
+        const contentText = parts[2]||'';
+        const formText = parts[3]||'';
+        const noteText = parts.slice(4).join(' ')||'';
+        const s = defaultStage();
+        s.name = stageName;
+        const sd = parseDateRange(timeText);
+        if(sd.start) s.startDate=sd.start;
+        if(sd.end) s.endDate=sd.end;
+        const t = defaultTask();
+        t.name = contentText || stageName;
+        t.description = [contentText, formText?'形式：'+formText:'', noteText].filter(Boolean).join('\n');
+        const due = extractDate(contentText+' '+noteText);
+        if(due) t.dueDate=due;
+        s.tasks.push(t);
+        stages.push(s);
+      });
+      return stages;
+    }
+
+    lines.forEach(line=>{
+      const stageMatch = line.match(/^(阶段|模块|Chapter|Part)[\s一二三四五六七八九十0-9]+[:：\.\s]*(.+)/) || line.match(/^(.+?)[:：]\s*\((\d{1,2}[\-/]\d{1,2}[\-/]?\d{0,4}).*?\)/);
+      const simpleStage = line.match(/^(.+?)\s*[（(](\d{1,2}[\-/]\d{1,2}[\-/]?\d{0,4}).*?[）)]/);
+      if(stageMatch || simpleStage || /^阶段/.test(line) || /^模块/.test(line)){
+        curStage = defaultStage();
+        const m = stageMatch || simpleStage;
+        curStage.name = (m?m[1]||m[2]:line).replace(/[（(].*?[）)]/g,'').trim();
+        const sd = parseDateRange(line);
+        if(sd.start) curStage.startDate=sd.start;
+        if(sd.end) curStage.endDate=sd.end;
+        stages.push(curStage);
+        return;
+      }
+      const taskMatch = line.match(/^(?:任务\s*\d+[.:：\s]*|(?:\d+[\.\)）])\s*|[-·]\s*)(.+)/) || (/截止|DDL|截止日期/.test(line) ? {1:line} : null);
+      if(taskMatch && curStage){
+        const t = defaultTask();
+        const raw = taskMatch[1];
+        const due = extractDate(raw);
+        if(due) t.dueDate=due;
+        t.name = raw.replace(/[（(]\s*截止.*?[）)]/g,'').replace(/截止\s*[:：]?\s*\d+[\-/]\d+.*?$/, '').trim() || '学习任务';
+        t.description = raw;
+        curStage.tasks.push(t);
+        return;
+      }
+      if(curStage && curStage.tasks.length>0){
+        curStage.tasks[curStage.tasks.length-1].description += '\n'+line;
+      } else if(curStage){
+        curStage.name += ' '+line;
+      }
+    });
+    return stages;
+  }
+  // 解析从在线文档/Excel复制的表格：
+  // 支持单元格内换行（说明列折行），按列数对齐并合并续行。
+  function parseTable(lines){
+    const expectedCols = 5; // 阶段 时间 内容 时长/形式 说明
+    let startIdx=0;
+    for(let i=0;i<Math.min(lines.length,3);i++){
+      const raw = lines[i].replace(/\s+/g,'');
+      if(/阶段.*时间.*内容/.test(raw)){ startIdx=i+1; break; }
+    }
+    const rows=[];
+    let currentTokens=[];
+    const dateLike = /(\d{1,2}\s*[月/\-]\s*\d{1,2}|\d{4}[\/\-]\d{1,2}[\/\-]?\d{0,2})/;
+    function flush(){
+      if(currentTokens.length===0) return;
+      const parsed = parseRowTokens(currentTokens);
+      if(parsed) rows.push(parsed);
+      currentTokens=[];
+    }
+    for(let i=startIdx;i<lines.length;i++){
+      const lineTokens = lines[i].split(/\s+/).map(s=>s.trim()).filter(Boolean);
+      if(lineTokens.length===0) continue;
+      // 新行判断：第二列通常是日期
+      const isNewRow = lineTokens.length>=2 && dateLike.test(lineTokens[1]);
+      if(isNewRow){
+        flush();
+        currentTokens = lineTokens.slice();
+      }else{
+        currentTokens = currentTokens.concat(lineTokens);
+      }
+    }
+    flush();
+    return rows;
+  }
+  // 把一行（已合并续行）的 token 拆成 5 列
+  function parseRowTokens(tokens){
+    if(tokens.length<2) return null;
+    const dateRe = /(\d{1,2}\s*[月/\-]\s*\d{1,2}|\d{4}[\/\-]\d{1,2}[\/\-]?\d{0,2})/;
+    const durRe = /^(约?\d+[分钟小时天周节]|共\d+[节分钟小时]|\d+天[,，]?)/;
+    let ti = tokens.findIndex((t,i)=>i>0 && dateRe.test(t));
+    if(ti===-1) ti = tokens.findIndex(t=>dateRe.test(t));
+    if(ti<=0) ti = 1;
+    const stage = tokens.slice(0, ti).join(' ');
+    const time = tokens[ti] || '';
+    let di = -1;
+    for(let i=ti+1;i<tokens.length;i++){
+      if(durRe.test(tokens[i])){ di=i; break; }
+    }
+    if(di===-1){
+      // 没有时间/时长，把剩余当内容
+      return [stage, time, tokens.slice(ti+1).join(' '), '', ''];
+    }
+    const content = tokens.slice(ti+1, di).join(' ');
+    // 时长/形式列可能附带地点（如"2天，北京"），尝试把下一个短 token 也纳入
+    let durEnd = di;
+    if(di+1 < tokens.length && tokens[di+1].length <= 4 && !/[，,]/.test(tokens[di+1])){
+      durEnd = di+1;
+    }
+    const duration = tokens.slice(di, durEnd+1).join(' ');
+    const note = tokens.slice(durEnd+1).join(' ');
+    return [stage, time, content, duration, note];
+  }
+  function parseDateRange(s){
+    const out={start:'',end:''};
+    if(!s) return out;
+    const m1 = s.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[~-]\s*(\d{1,2})\s*日/);
+    if(m1){
+      const now = new Date();
+      out.start = now.getFullYear()+'-'+String(parseInt(m1[1],10)).padStart(2,'0')+'-'+String(parseInt(m1[2],10)).padStart(2,'0');
+      out.end = now.getFullYear()+'-'+String(parseInt(m1[1],10)).padStart(2,'0')+'-'+String(parseInt(m1[3],10)).padStart(2,'0');
+      return out;
+    }
+    const m2 = s.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*[~-]\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
+    if(m2){
+      const now = new Date();
+      out.start = now.getFullYear()+'-'+String(parseInt(m2[1],10)).padStart(2,'0')+'-'+String(parseInt(m2[2],10)).padStart(2,'0');
+      out.end = now.getFullYear()+'-'+String(parseInt(m2[3],10)).padStart(2,'0')+'-'+String(parseInt(m2[4],10)).padStart(2,'0');
+      return out;
+    }
+    const m3 = s.match(/(\d{4}[\-/]\d{1,2}[\-/]\d{1,2})\s*[~-]\s*(\d{4}[\-/]\d{1,2}[\-/]\d{1,2})/);
+    if(m3){ out.start=normalizeDate(m3[1]); out.end=normalizeDate(m3[2]); return out; }
+    const single = extractDate(s);
+    if(single) out.start=single;
+    return out;
+  }
+  function extractDate(s){
+    if(!s) return '';
+    const m = s.match(/(\d{4}[\-/]\d{1,2}[\-/]\d{1,2}|\d{1,2}[\-/]\d{1,2}[\-/]\d{4}|\d{1,2}[\-/]\d{1,2})/);
+    return m ? normalizeDate(m[1]) : '';
+  }
+  function normalizeDate(s){
+    if(!s) return '';
+    const parts = s.split(/[\-/]/).map(x=>parseInt(x,10));
+    if(parts.length<2) return '';
+    const now = new Date();
+    let y=parts[0], m=parts[1], d=parts[2];
+    if(parts.length===2){ y=now.getFullYear(); m=parts[0]; d=parts[1]; }
+    if(y<100) y += 2000;
+    if(y<2000 || y>2100 || m<1 || m>12 || d<1 || d>31) return '';
+    return y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+  }
+  function escapeRegex(s){ return (s||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+  function chineseToNum(s){
+    const map={'一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10};
+    if(/^\d+$/.test(s)) return parseInt(s,10);
+    if(s==='十') return 10;
+    if(s.length===2 && s[0]==='十') return 10+(map[s[1]]||0);
+    if(s.length===2 && s[1]==='十') return (map[s[0]]||0)*10;
+    if(s.length===3 && s[1]==='十') return (map[s[0]]||0)*10+(map[s[2]]||0);
+    return map[s]||0;
+  }
+
+  // ---------- 文案识别（通知文案按阶段+受众分发）----------
+  function renderCopyRecSection(){
+    const wrap = document.createElement('div'); wrap.className='identify-block';
+    const draft = project._copyRecDraft || {};
+    const stageList = (project.stages||[]).map((s,i)=>`${i+1}. ${esc(s.name||'未命名')}`).join('、') || '（暂无阶段，请先在「通知列表」添加阶段）';
+    wrap.innerHTML = `<div class="section-title" style="margin-top:24px"><h4>识别通知文案</h4></div>
+      <p class="sub">粘贴一份含多个通知文案的文档，自动分发到对应阶段的受众通知。支持两类编码：
+      ①<strong>阶段名 + 称呼 + 正文</strong>（如「训前线上微课 / 各位同学：…」）；
+      ②<strong>标题化通知</strong>（如「【7.1】建群及前测通知」「7.13 线上微课学习通知」后接正文）。
+      前者按阶段名匹配，后者按标题中的日期/编号归入「待人工确认」，由你指派到具体阶段与受众。</p>
+      <p class="hint">当前项目阶段：${stageList}</p>
+      <textarea id="copyRecInput" style="min-height:200px" placeholder="例如（类型①）：
+训前线上微课
+各位同学：
+请于8月5日前完成微课学习，链接见下方...
+训前线上微课
+各位领导、同事：
+本次培训进度如下...
+
+或（类型②）：
+【7.1】建群及前测通知
+各位同学：
+请扫码进入班级群...
+7.13 线上微课学习通知
+各位学员：
+本周开放第一节微课..."></textarea>
+      <div class="actions" style="justify-content:flex-end;margin-top:10px">
+        <button class="ghost" id="btnClearCopyRec" type="button">清空</button>
+        <button class="primary" id="btnDoCopyRec">识别并预览</button>
+      </div>
+      <div id="copyRecResult"></div>`;
+    const ta = $('#copyRecInput',wrap); ta.value = draft.text || '';
+    const res = $('#copyRecResult',wrap);
+    if(draft.results) renderCopyRecPreview(res, draft.results, draft.unclear||[]);
+    $('#btnDoCopyRec',wrap).addEventListener('click',()=> doCopyRec());
+    $('#btnClearCopyRec',wrap).addEventListener('click',()=>{ ta.value=''; res.innerHTML=''; delete project._copyRecDraft; scheduleAutoSave(); });
+    return wrap;
+  }
+  function renderCopyRecPreview(box, results, unclear){
+    let html='';
+    const stageOpts = (project.stages||[]).map((s,i)=>`<option value="${s.id}">${esc(s.name||('阶段'+(i+1)))}</option>`).join('');
+    function notifOptsFor(stageId){
+      const st = project.stages.find(s=>s.id===stageId);
+      const n = Math.max(1, (st && st.notifications && st.notifications.length) || 0);
+      let opts='';
+      for(let i=1;i<=n+1;i++) opts+=`<option value="${i}">第${i}条通知${i>n?'（新建）':''}</option>`;
+      return opts;
+    }
+    if(results.length){
+      html += '<h4 style="margin-top:16px">已识别（自动匹配阶段与受众，勾选后应用）</h4><div class="copyrec-table">';
+      results.forEach((r,i)=>{
+        html += `<div class="copyrec-row">
+          <label class="chk" style="flex-shrink:0"><input type="checkbox" class="crpick res-pick" value="${i}" checked></label>
+          <span class="cr-stage">${esc(r.stageName)}</span>
+          <span class="cr-aud">${GROUPS_LABEL[r.aud]||r.aud}</span>
+          <select class="cr-notif-sel" data-mode="res" data-idx="${i}">${notifOptsFor(r.stageId)}</select>
+          <span class="cr-preview">${esc(r.content.slice(0,80))}${r.content.length>80?'…':''}</span>
+        </div>`;
+      });
+      html += '</div><div class="actions" style="margin-top:10px"><button class="primary" id="btnApplyCopyRec">应用选中项</button></div>';
+    }
+    if(unclear.length){
+      html += '<h4 style="margin-top:16px;color:var(--warn)">待人工确认（为每条选择「阶段 + 受众 + 通知序号」后应用）</h4><div class="copyrec-unclear">';
+      unclear.forEach((u,idx)=>{
+        const head = u.title ? ('【标题】'+esc(u.title)) : (u.context?('【'+u.context+'】'):'');
+        html += `<div class="cr-unclear-item">
+          <div class="cr-unclear-head">
+            <label class="chk" style="flex-shrink:0;margin:0"><input type="checkbox" class="crpick unc-pick" value="${idx}" checked></label>
+            <select class="cr-stage-sel" data-idx="${idx}"><option value="">选择阶段…</option>${(project.stages||[]).map((s,i)=>`<option value="${s.id}"${s.id===u.stageId?' selected':''}>${esc(s.name||('阶段'+(i+1)))}</option>`).join('')}</select>
+            <select class="cr-aud-sel" data-idx="${idx}">
+              <option value="">选择受众…</option>
+              <option value="student">${GROUPS_LABEL.student||'学员'}</option>
+              <option value="manager">${GROUPS_LABEL.manager||'管理'}</option>
+              <option value="lecturer">${GROUPS_LABEL.lecturer||'讲师'}</option>
+            </select>
+            <select class="cr-notif-sel" data-mode="unc" data-idx="${idx}">${notifOptsFor(u.stageId)}</select>
+          </div>
+          <div class="cr-unclear-body">${esc((head?head+'\n':'')+u.content.slice(0,400))}</div>
+        </div>`;
+      });
+      html += '</div><div class="actions" style="margin-top:10px"><button class="primary" id="btnApplyUnclear">应用选中项（按所选阶段/受众）</button></div>';
+    }
+    if(!results.length && !unclear.length){
+      html = '<p class="sub" style="margin-top:14px">未识别到内容，请检查文档格式。</p>';
+    }
+    box.innerHTML = html;
+    $$('.cr-stage-sel', box).forEach(sel=>{
+      const update = ()=>{
+        const idx=sel.dataset.idx;
+        const notifSel=$('.cr-notif-sel[data-mode="unc"][data-idx="'+idx+'"]', box);
+        if(notifSel){
+          const cur=notifSel.value||'1';
+          notifSel.innerHTML=notifOptsFor(sel.value);
+          if(parseInt(cur,10)<=(notifSel.options.length||1)) notifSel.value=cur;
+        }
+      };
+      sel.addEventListener('change', update);
+      update();
+    });
+    if(results.length) $('#btnApplyCopyRec',box).addEventListener('click',()=> applyCopyRec(results, [], 'res'));
+    if(unclear.length) $('#btnApplyUnclear',box).addEventListener('click',()=> applyCopyRec([], unclear, 'unc'));
+  }
+  function parseCopyForNotifications(text){
+    const stages = project.stages||[];
+    const results=[]; const unclear=[];
+    if(stages.length===0) return {results, unclear:[{text:text}]};
+    const stageMatchers = stages.map((s,idx)=>({
+      id:s.id, name:s.name||('阶段'+(idx+1)),
+      re:new RegExp('^\\s*#*\\s*'+escapeRegex(s.name||('阶段'+(idx+1)))+'\\s*[:：]?\\s*$')
+    }));
+    const ROLES = {
+      student:['同学','学员','参训学员','学员们','学员同学们','同学们','学员朋友','学员们朋友','朋友们','学员朋友们','小伙伴们','研究生','在校生','家长'],
+      lecturer:['讲师','授课老师','老师们','老师','导师','助教','班主任','教授','教员','教练'],
+      manager:['领导','同事','各部门负责人','管理者','管理组','主管','经理','负责人','嘉宾','合作方','甲方']
+    };
+    const SALUT_PREFIX = '(?:亲爱的|尊敬的|敬爱的|hi|hello|HELLO)?\\s*(?:各位|所有|全体|咱们|亲爱的)?\\s*';
+    const SALUT_WORDS = [...ROLES.student, ...ROLES.lecturer, ...ROLES.manager].sort((a,b)=>b.length-a.length);
+    const salutationRe = new RegExp('^'+SALUT_PREFIX+'(?:'+SALUT_WORDS.map(escapeRegex).join('|')+')(?:[、,\\s]*(?:'+SALUT_PREFIX+')?(?:'+SALUT_WORDS.map(escapeRegex).join('|')+'))*[:：]?\\s*', 'i');
+    // 标题化通知（类型②）：【编号】标题 / [编号]标题 / M.D 或 M月D日 + 标题 / 第X阶段:标题
+    const titleRe = /^(?:【[^】]{1,30}】|\[[^\[\]]{1,30}\]|\d{1,2}[.\/]\d{1,2}\s+\S+|\d{1,2}月\d{1,2}日\s+\S+|第[一二三四五六七八九十\d]+阶段[:：]\S+)/;
+    // 综合阶段归属判定（用于标题块/模糊归属）：关键词 > 阶段名精确 > 模糊唯一包含 > 编号整数弱启发
+    function findStageByText(text){
+      const tt = (text||'').trim();
+      if(!tt) return null;
+      const exact = stages.find(s=>{
+        const nm=(s.name||'').trim();
+        if(!nm) return false;
+        if(tt===nm || tt===nm+'：' || tt===nm+'：') return true;
+        return new RegExp('^#*\\s*'+escapeRegex(nm)+'\\s*[:：]?$').test(tt);
+      });
+      if(exact) return exact;
+      const om = tt.match(/^(?:第[一二三四五六七八九十\d]+阶段|(?:阶段|模块)\s*[\d一二三四五六七八九十]+)/);
+      if(om){
+        const num = chineseToNum((om[0].match(/[\d一二三四五六七八九十]+/)||['0'])[0]);
+        if(num>=1 && num<=stages.length) return stages[num-1];
+      }
+      for(const s of stages){
+        const kws=(s.keywords||'').split(/[,，]/).map(x=>x.trim()).filter(Boolean);
+        if(kws.some(k=> tt.includes(k))) return s;
+      }
+      const nameHits = stages.filter(s=> (s.name||'').trim() && tt.includes((s.name||'').trim()));
+      if(nameHits.length===1) return nameHits[0];
+      const bm = tt.match(/【\s*(\d{1,2})(?:[.\/]\d{1,2})?\s*】/);
+      if(bm){
+        const n=parseInt(bm[1],10);
+        if(n>=1 && n<=stages.length) return stages[n-1];
+      }
+      return null;
+    }
+    function isStageLine(t){
+      if(stageMatchers.some(m=>m.re.test(t))) return {match:true, stage:stageMatchers.find(m=>m.re.test(t))};
+      const om = t.match(/^(?:第[一二三四五六七八九十\d]+阶段|(?:阶段|模块)\s*[\d一二三四五六七八九十]+)[:：]?\s*$/);
+      if(om){
+        const num = chineseToNum((om[0].match(/[\d一二三四五六七八九十]+/)||['0'])[0]);
+        if(num>=1 && num<=stages.length) return {match:true, stage:{id:stages[num-1].id, name:stages[num-1].name}};
+      }
+      return {match:false};
+    }
+    function detectAud(t){
+      const sm = t.match(salutationRe);
+      if(!sm) return {aud:null, rest:null};
+      const phrase = sm[0];
+      let aud=null;
+      if(ROLES.student.some(k=>phrase.includes(k))) aud='student';
+      else if(ROLES.lecturer.some(k=>phrase.includes(k))) aud='lecturer';
+      else if(ROLES.manager.some(k=>phrase.includes(k))) aud='manager';
+      const rest = t.slice(sm[0].length).replace(/^[\s，,:：]+/,'');
+      return {aud, rest};
+    }
+    // 按「通知块」切分
+    const lines = text.split(/\r?\n/);
+    const blocks=[]; let cur=null;
+    function pushBlock(){ if(cur && cur.lines.join('\n').trim()) blocks.push(cur); cur=null; }
+    for(const raw of lines){
+      const t = raw.trim();
+      if(!t){ pushBlock(); continue; }
+      const st = isStageLine(t);
+      if(st.match){
+        pushBlock();
+        cur = {stageId:st.stage.id, stageName:st.stage.name, aud:null, title:null, lines:[]};
+        continue;
+      }
+      if(titleRe.test(t)){
+        pushBlock();
+        cur = {stageId:null, stageName:null, aud:null, title:t, lines:[t]};
+        continue;
+      }
+      if(!cur) cur = {stageId:null, stageName:null, aud:null, title:null, lines:[]};
+      cur.lines.push(raw);
+    }
+    pushBlock();
+    // 处理每个块
+    for(const b of blocks){
+      let stageId = b.stageId, stageName = b.stageName;
+      // 标题块 / 普通块首行 尝试自动归属阶段（靠关键词/名称/编号）
+      if(!stageId){
+        const probe = b.title || b.lines.map(x=>x.trim()).find(x=>x) || '';
+        const st = findStageByText(probe);
+        if(st){ stageId=st.id; stageName=st.name; }
+      }
+      let aud=null; const contentLines=[];
+      for(const raw of b.lines){
+        const t = raw.trim();
+        if(!t){ contentLines.push(''); continue; }
+        const {aud:da, rest} = detectAud(t);
+        if(da && !aud) aud=da;
+        contentLines.push(da ? (rest||'') : raw);
+      }
+      const content = contentLines.join('\n').replace(/\n{3,}/g,'\n\n').trim();
+      if(stageId && aud){
+        results.push({stageId, stageName, aud, content});
+      } else if(stageId && !aud){
+        unclear.push({title:b.title, context:stageName, stageId, aud:null, content});
+      } else {
+        unclear.push({title:b.title, context:null, stageId:null, aud:null, content});
+      }
+    }
+    return {results, unclear};
+  }
+  function doCopyRec(){
+    const text = $('#copyRecInput').value.trim();
+    if(!text){ toast('请粘贴文案文档'); return; }
+    const parsed = parseCopyForNotifications(text);
+    const box = $('#copyRecResult');
+    renderCopyRecPreview(box, parsed.results, parsed.unclear);
+    project._copyRecDraft = { text, results: parsed.results, unclear: parsed.unclear };
+    scheduleAutoSave();
+  }
+  function applyCopyRec(results, unclear, mode){
+    const resBox = $('#copyRecResult');
+    let targets=[]; // {stageId, aud, content, stageName, notifIdx}
+    if(mode==='res'){
+      const checked = $$('.res-pick:checked', resBox).map(x=>parseInt(x.value,10));
+      checked.forEach(i=>{
+        const r=results[i];
+        const notifIdx = parseInt($('.cr-notif-sel[data-mode="res"][data-idx="'+i+'"]', resBox).value,10) || 1;
+        targets.push({stageId:r.stageId, aud:r.aud, content:r.content, stageName:r.stageName, notifIdx});
+      });
+    } else {
+      const checked = $$('.unc-pick:checked', resBox).map(x=>parseInt(x.value,10));
+      let missing=0;
+      checked.forEach(i=>{
+        const u = unclear[i];
+        const stageId = $(`.cr-stage-sel[data-idx="${i}"]`, resBox).value;
+        const aud = $(`.cr-aud-sel[data-idx="${i}"]`, resBox).value;
+        const notifIdx = parseInt($('.cr-notif-sel[data-mode="unc"][data-idx="'+i+'"]', resBox).value,10) || 1;
+        if(!stageId || !aud){ missing++; return; }
+        const st = project.stages.find(s=>s.id===stageId);
+        targets.push({stageId, aud, content:u.content, stageName:(st&&st.name)||'', notifIdx});
+      });
+      if(missing>0){ toast('有 '+missing+' 条未选择阶段或受众，请补全后再应用'); return; }
+    }
+    if(targets.length===0){ toast('请先勾选要应用的项'); return; }
+    // 先确保目标通知存在（无则自动创建）
+    targets.forEach(t=>{
+      const stage = project.stages.find(s=>s.id===t.stageId);
+      ensureNotificationExists(stage, t.notifIdx);
+    });
+    let willOverwrite=0;
+    targets.forEach(t=>{
+      const stage = project.stages.find(s=>s.id===t.stageId);
+      if(!stage || !stage.notifications || stage.notifications.length<t.notifIdx) return;
+      const n = stage.notifications[t.notifIdx-1];
+      const ac = n.audienceContent[t.aud];
+      if(ac && ac.content && ac.content.trim() && ac.content.trim()!==t.content.trim()) willOverwrite++;
+    });
+    if(willOverwrite>0 && !confirm('选中的 '+willOverwrite+' 条文案将覆盖已有通知文案，是否继续？')) return;
+    let applied=0; const skipped=[];
+    targets.forEach(t=>{
+      const stage = project.stages.find(s=>s.id===t.stageId);
+      if(!stage){ skipped.push(t.stageName||'未知阶段'); return; }
+      ensureNotificationExists(stage, t.notifIdx);
+      const n = stage.notifications[t.notifIdx-1];
+      if(!n){ skipped.push(t.stageName||'未知阶段'); return; }
+      const ac = n.audienceContent[t.aud];
+      if(!ac) return;
+      ac.content = t.content;
+      ac.inputMode = 'paste';
+      ac.enabled = true;
+      applied++;
+    });
+    delete project._copyRecDraft;
+    if(resBox) resBox.innerHTML='';
+    scheduleAutoSave();
+    render();
+    let msg = '已应用 '+applied+' 处（设为「直接粘贴」并启用）';
+    if(skipped.length) msg += '；'+skipped.join('、')+' 未找到阶段，已跳过';
+    toast(msg);
+  }
+  function ensureNotificationExists(stage, idx){
+    if(!stage) return;
+    if(!stage.notifications) stage.notifications=[];
+    while(stage.notifications.length < idx){ stage.notifications.push(defaultNotification()); }
+  }
+
+  // ---------- 分类管理 ----------
+  function openCategoryManager(){
+    renderCategoryList();
+    $('#categoryModal').classList.add('show');
+  }
+  function renderCategoryList(){
+    const cats = getCategories();
+    const wrap = $('#categoryList'); wrap.innerHTML='';
+    if(cats.length===0){ wrap.innerHTML='<p class="sub">暂无分类。</p>'; return; }
+    cats.forEach(c=>{
+      const d = document.createElement('div'); d.className='group-row';
+      d.innerHTML = `<span style="flex:1">${esc(c)}</span>
+        <span class="sub">${projects.filter(p=>p.category===c).length} 个项目</span>
+        <button class="ghost danger mini-btn" data-delcat="${esc(c)}">删除</button>`;
+      d.querySelector('[data-delcat]').addEventListener('click',async ()=>{
+        if(!confirm(`确认删除分类「${c}」？该分类下的项目将变为未分类。`)) return;
+        const affected = projects.filter(p=>p.category===c);
+        for(const meta of affected){
+          try{
+            let p;
+            if(SERVER_MODE){
+              const r=await fetch('/api/project/'+meta.id);
+              const j=await r.json(); p=j.project||{};
+            }else if(_sb){
+              const v=await cloudGet('project:'+meta.id); p=(v&&Object.keys(v).length)?v:{};
+            }else{
+              p=JSON.parse(localStorage.getItem('tn_v10_'+meta.id)||'{}');
+            }
+            p.category=''; p.updatedAt=new Date().toISOString();
+            if(SERVER_MODE){
+              await fetch('/api/project/'+meta.id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});
+            }else if(_sb){
+              await cloudSet('project:'+meta.id, p);
+            }else{
+              localStorage.setItem('tn_v10_'+meta.id,JSON.stringify(p));
+            }
+          }catch(e){}
+        }
+        await loadProjectList();
+        renderCategoryList();
+        if(view==='list') renderHomeSidebar();
+      });
+      wrap.appendChild(d);
+    });
+  }
+
+  // ---------- 杂项 ----------
+  function toast(msg, opts){
+    const tone = (opts && opts.tone) || 'info';   // info: 底部黑框（默认）；warn: 顶部黄色横幅，停留更久
+    const duration = (opts && opts.duration) || (tone === 'warn' ? 6000 : 2600);
+    const cls = tone === 'warn' ? 'toast toast-warn' : 'toast';
+    let t = tone === 'warn' ? $('#toast-warn') : $('#toast');
+    if(!t){
+      t = document.createElement('div');
+      t.id = tone === 'warn' ? 'toast-warn' : 'toast';
+      t.className = cls;
+      document.body.appendChild(t);
+    } else {
+      t.className = cls;
+    }
+    t.textContent = msg;
+    t.classList.add('show');
+    if(t._timer) clearTimeout(t._timer);
+    t._timer = setTimeout(()=> t.classList.remove('show'), duration);
+  }
+  async function newProjectFlow(){
+    const id = await createProject();
+    if(id) setView('edit', id);
+  }
+
+  // ---------- 事件绑定 ----------
+  $('#btnAddGroup').addEventListener('click',()=>{
+    const name=$('#gName').value.trim(), type=$('#gType').value, url=$('#gUrl').value.trim();
+    if(!name||!url){ toast('请填写群名称和 Webhook'); return; }
+    globalGroups.push({id:uid(),name,type,webhookUrl:url,pinned:false});
+    saveGlobalGroups(); $('#gName').value=''; $('#gUrl').value=''; renderGroups(); if(view==='edit') render();
+  });
+  $('#gSearch').addEventListener('input',renderGroups);
+  $('#gFilter').addEventListener('change',renderGroups);
+  $('#btnDoTestSend').addEventListener('click', doTestSend);
+  $('#assocPickerSearch').addEventListener('input',renderAssocPicker);
+  $('#assocPickerFilter').addEventListener('change',renderAssocPicker);
+  $('#btnConfirmAssoc').addEventListener('click', confirmAssocPicker);
+  $('#btnAddCategory').addEventListener('click',()=>{
+    const name = $('#newCategoryName').value.trim();
+    if(!name){ toast('请输入分类名称'); return; }
+    // 如果当前在项目页且正在编辑项目信息，自动填入
+    if(view==='edit' && editSection==='meta'){
+      project.category = name;
+      scheduleAutoSave();
+    }
+    $('#newCategoryName').value='';
+    renderCategoryList();
+    if(view==='list') renderHomeSidebar();
+    if(view==='edit' && editSection==='meta') renderProjectMain();
+    toast('分类已添加');
+  });
+  $$('[data-close]').forEach(x=> x.addEventListener('click',()=> $('#'+x.dataset.close).classList.remove('show')));
+  $$('.modal-mask').forEach(m=>{
+    if(m.id==='templateModal' || m.id==='authMask') return; // 登录遮罩/模板管理弹窗仅允许通过按钮关闭，防止误触
+    m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('show'); });
+  });
+
+  // ---------- 启动 ----------
+  (async function init(){
+    // 认证未通过则不加载业务数据（包括 createProject 不会自动写 localStorage）
+    // 登录成功后会由 doLogin 内部调用 bootBusiness() 完成首次加载
+    const authOk = await setupAuth();
+    if(authOk){
+      await loadGlobalGroups();
+      await loadAppSettings();
+      await loadTemplates();
+      await seedDefaultTemplates();
+      await loadProjectList();
+      if(projects.length===0){
+        const id = await createProject();
+        if(id) await loadProjectList();
+      }
+      render();
+    }
+  })();
+})();
+</script>
+</body>
+</html>

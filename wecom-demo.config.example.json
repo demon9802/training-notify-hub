@@ -1,0 +1,14 @@
+{
+  "webhookUrl": "YOUR_WECHAT_WORK_GROUP_BOT_WEBHOOK_URL",
+  "event": {
+    "title": "新员工安全培训",
+    "type": "培训",
+    "startTime": "2026-07-24 14:00",
+    "endTime": "2026-07-24 16:00",
+    "location": "3F培训室 / 腾讯会议",
+    "materialsUrl": "https://example.com/training-materials",
+    "owner": "张三",
+    "audience": "新员工培训群",
+    "note": "请大家提前10分钟入场，并按时完成签到。"
+  }
+}

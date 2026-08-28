@@ -1,0 +1,30 @@
+name: 培训通知助手 - 云端定时发送
+
+on:
+  schedule:
+    # 每 15 分钟一次；避开整点（:00）以防高负载被延迟/丢弃
+    - cron: '17,47 * * * *'
+  workflow_dispatch: {}   # 允许手动触发
+
+jobs:
+  send-due:
+    runs-on: ubuntu-latest
+    env:
+      # 通知时间是 CST（UTC+8）的"墙钟时间"——不写 Z，Node 默认按本机时区解析。
+      # GitHub Actions 容器是 UTC，必须显式指定时区，否则会把 "2026-08-27T15:49" 当成 15:49 UTC (= 23:49 CST)，
+      # 导致 now < at 永远不满足，整次扫描空跑。
+      TZ: Asia/Shanghai
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'  # Supabase JS v2 RealtimeClient 需要原生 WebSocket（Node 22+）
+      - name: 安装依赖
+        working-directory: training-notify-hub-actions
+        run: npm install @supabase/supabase-js --no-save
+      - name: 执行云端发送
+        env:
+          TN_SUPABASE_URL: ${{ secrets.TN_SUPABASE_URL }}
+          TN_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TN_SUPABASE_SERVICE_ROLE_KEY }}
+        working-directory: training-notify-hub-actions
+        run: node send-due-action.js

@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>企业微信通知与日程提醒助手｜汇报展示版</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --paper: #ffffff;
+      --ink: #1f2937;
+      --muted: #667085;
+      --line: #e5e7eb;
+      --blue: #2563eb;
+      --blue-light: #eff6ff;
+      --green: #059669;
+      --green-light: #ecfdf5;
+      --amber: #d97706;
+      --amber-light: #fffbeb;
+      --red: #dc2626;
+      --red-light: #fef2f2;
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.6;
+    }
+    .page {
+      max-width: 1080px;
+      margin: 28px auto;
+      padding: 0 20px 40px;
+    }
+    .hero {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 34px 38px;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 12px; font-size: 32px; line-height: 1.25; letter-spacing: -0.02em; }
+    .subtitle { margin: 0; color: var(--muted); font-size: 17px; }
+    .tagline {
+      margin-top: 20px;
+      padding: 14px 18px;
+      background: var(--blue-light);
+      border: 1px solid #bfdbfe;
+      border-radius: 14px;
+      color: #1e40af;
+      font-weight: 600;
+    }
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 26px 28px;
+      margin: 18px 0;
+      break-inside: avoid;
+    }
+    h2 { margin: 0 0 18px; font-size: 22px; }
+    h3 { margin: 0 0 12px; font-size: 17px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border: 1px solid var(--line); padding: 11px 12px; vertical-align: top; }
+    th { background: #f9fafb; text-align: left; color: #374151; font-weight: 700; }
+    tr:nth-child(even) td { background: #fcfcfd; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .card { border: 1px solid var(--line); border-radius: 14px; padding: 16px; background: #fff; }
+    .card.blue { background: var(--blue-light); border-color: #bfdbfe; }
+    .card.green { background: var(--green-light); border-color: #a7f3d0; }
+    .card.amber { background: var(--amber-light); border-color: #fde68a; }
+    .card.red { background: var(--red-light); border-color: #fecaca; }
+    .wireframes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .wire {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #f9fafb;
+      padding: 14px;
+      min-height: 260px;
+    }
+    .wire .bar { height: 34px; background: #e5e7eb; border-radius: 10px; margin-bottom: 12px; display: flex; align-items: center; padding: 0 12px; color: #374151; font-weight: 700; font-size: 14px; }
+    .field { height: 24px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; margin: 8px 0; padding: 2px 9px; color: #6b7280; font-size: 12px; }
+    .check { display: flex; align-items: center; gap: 8px; margin: 7px 0; color: #4b5563; font-size: 12px; }
+    .box { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; margin: 10px 0; }
+    .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    .btn { background: #2563eb; color: white; border-radius: 999px; padding: 7px 12px; font-size: 12px; }
+    .btn.secondary { background: #eef2ff; color: #3730a3; }
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      text-align: center;
+    }
+    .flow-node { border-radius: 14px; padding: 16px 10px; background: #f9fafb; border: 1px solid var(--line); font-weight: 700; }
+    .arrow { color: var(--muted); font-size: 22px; }
+    .kpi { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+    .kpi div { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 12px; text-align: center; }
+    .kpi strong { display: block; font-size: 24px; color: var(--blue); }
+    .final {
+      font-size: 20px;
+      text-align: center;
+      font-weight: 700;
+      padding: 24px;
+      background: #111827;
+      color: white;
+      border-radius: var(--radius);
+    }
+    @media print {
+      body { background: white; }
+      .page { max-width: none; margin: 0; padding: 0; }
+      section, .hero { box-shadow: none; break-inside: avoid; }
+      h1 { font-size: 28px; }
+    }
+    @media (max-width: 760px) {
+      .grid, .wireframes, .flow, .kpi { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .hero, section { padding: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <h1>企业微信通知与日程提醒助手</h1>
+      <p class="subtitle">面向培训、会议、活动等组织场景的自动提醒与跟进工具</p>
+      <div class="tagline">负责人创建一次活动，系统自动完成群通知、个人提醒、日程提醒、补推和结果看板。</div>
+    </header>
+
+    <section>
+      <h2>01｜功能概要</h2>
+      <table>
+        <thead><tr><th>功能模块</th><th>可实现能力</th><th>产品效果</th></tr></thead>
+        <tbody>
+          <tr><td>活动创建</td><td>创建培训、会议、活动，配置时间、地点、对象、负责人、材料链接</td><td>统一管理各类组织事项</td></tr>
+          <tr><td>群通知</td><td>按节点自动向企业微信群发送公告、会前提醒、变更通知、签到提醒、结束提醒</td><td>替代人工定时发群消息</td></tr>
+          <tr><td>个人提醒</td><td>对指定成员发送个人提醒，如未确认、未签到、未完成任务提醒</td><td>精准触达个人，减少群内反复催办</td></tr>
+          <tr><td>日程提醒</td><td>自动写入企业微信日历，触发会前提醒</td><td>重要事项进入成员日程，降低遗忘风险</td></tr>
+          <tr><td>签到 / 确认</td><td>支持参加确认、签到提醒、未完成补推</td><td>形成从通知到参与的闭环</td></tr>
+          <tr><td>状态看板</td><td>查看通知发送、确认、签到、问卷 / 作业完成情况</td><td>负责人可追踪、可复盘</td></tr>
+          <tr><td>模板复用</td><td>沉淀培训、会议、活动的通知模板和提醒节点</td><td>常规事项可复用，降低配置成本</td></tr>
+          <tr><td>智能辅助</td><td>自动生成通知文案、推荐提醒节奏、生成活动复盘</td><td>提升运营效率和通知质量</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>02｜实现阶段与效果</h2>
+      <table>
+        <thead><tr><th>阶段</th><th>实现重点</th><th>覆盖功能</th><th>解决问题 / 达到效果</th><th>核心部署形式</th></tr></thead>
+        <tbody>
+          <tr><td>阶段一：自动群通知</td><td>先跑通基础提醒</td><td>活动信息、提醒模板、定时群通知、基础发送记录</td><td>解决人工忘发、晚发、重复写通知的问题</td><td>企业微信群机器人 + 轻量自动化服务 / Dify 工作流</td></tr>
+          <tr><td>阶段二：日程与个人提醒</td><td>补齐个人触达</td><td>企业微信日程、个人消息、未确认 / 未签到提醒</td><td>从“群里通知了”升级为“个人也能收到提醒”</td><td>企业微信自建应用 + 轻量后端服务</td></tr>
+          <tr><td>阶段三：状态闭环</td><td>形成完整跟进链路</td><td>确认参加、签到、问卷 / 作业完成状态、失败重试、一键补推</td><td>解决负责人手动核对、逐个催办的问题</td><td>轻量后端 + 数据库 + 企业微信接口</td></tr>
+          <tr><td>阶段四：产品化与智能化</td><td>提升复用和效率</td><td>活动模板、AI 文案、提醒节奏推荐、多群同步、复盘报表</td><td>从单次提醒工具升级为可复用的活动通知平台</td><td>后台管理端 + Dify / AI 能力辅助</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>03｜核心产品流程</h2>
+      <div class="flow">
+        <div class="flow-node">创建活动<br><small>培训 / 会议 / 活动</small></div>
+        <div class="arrow">→</div>
+        <div class="flow-node">生成提醒计划<br><small>群 / 个人 / 日程</small></div>
+        <div class="arrow">→</div>
+        <div class="flow-node">状态回收<br><small>确认 / 签到 / 复盘</small></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>04｜低保真产品原型</h2>
+      <div class="wireframes">
+        <div class="wire">
+          <div class="bar">负责人管理端</div>
+          <div class="field">活动类型：培训 / 会议 / 活动</div>
+          <div class="field">活动名称：新员工安全培训</div>
+          <div class="field">活动时间：7月24日 14:00 - 16:00</div>
+          <div class="field">参与对象：新员工培训群 / 指定成员</div>
+          <div class="check">☑ 提前1天：群通知</div>
+          <div class="check">☑ 提前1小时：个人提醒</div>
+          <div class="check">☑ 开始时：签到提醒</div>
+          <div class="btns"><span class="btn">生成提醒计划</span><span class="btn secondary">预览通知</span><span class="btn secondary">发布活动</span></div>
+        </div>
+        <div class="wire">
+          <div class="bar">企业微信群通知</div>
+          <div class="box"><strong>【培训提醒】新员工安全培训</strong><br>时间：7月24日 14:00 - 16:00<br>地点：3F培训室 / 腾讯会议<br><br>请大家提前10分钟入场，并按时完成签到。</div>
+        </div>
+        <div class="wire">
+          <div class="bar">个人提醒 + 日程提醒</div>
+          <div class="box"><strong>你有一个培训即将开始</strong><br>新员工安全培训<br>开始时间：今天 14:00<br>请在开始前完成签到。</div>
+          <div class="box"><strong>企业微信日历</strong><br>14:00 - 16:00 新员工安全培训<br>提醒：开始前1小时、15分钟</div>
+        </div>
+        <div class="wire">
+          <div class="bar">结果看板</div>
+          <div class="kpi"><div><strong>38/42</strong>确认参加</div><div><strong>35/42</strong>已签到</div><div><strong>31/42</strong>已填问卷</div></div>
+          <div class="box">未完成成员：7 人</div>
+          <div class="btns"><span class="btn secondary">查看名单</span><span class="btn">一键补发提醒</span><span class="btn secondary">生成复盘</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>05｜使用前后效果对比</h2>
+      <table>
+        <thead><tr><th>事项</th><th>当前方式</th><th>使用后</th></tr></thead>
+        <tbody>
+          <tr><td>发通知</td><td>人工到点发群消息</td><td>系统按节点自动发送</td></tr>
+          <tr><td>会前提醒</td><td>负责人手动提醒</td><td>群通知 + 个人提醒 + 日程提醒</td></tr>
+          <tr><td>临时变更</td><td>多群手动同步</td><td>一次配置，自动同步通知</td></tr>
+          <tr><td>签到催办</td><td>人工查名单、逐个催</td><td>未签到人员自动补推</td></tr>
+          <tr><td>问卷 / 作业</td><td>群内反复提醒</td><td>未完成人员定向提醒</td></tr>
+          <tr><td>结果统计</td><td>人工统计完成情况</td><td>看板自动展示进度</td></tr>
+          <tr><td>经验沉淀</td><td>每次重新组织</td><td>模板复用，活动可复制</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <div class="final">从“负责人手动盯节点”升级为“系统自动推进提醒与跟进”。</div>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,85 @@
+# 依赖
+node_modules/
+
+# 本地密钥（含 Supabase service_role，切勿提交）
+.env
+
+# 本地部署配置（含 EdgeOne 项目 ID，本地保留即可）
+.edgeone/
+
+# WorkBuddy 内存/缓存
+.workbuddy/
+
+# 日志
+*.log
+server*.log
+deploy_*.log
+deploy_v10*.log
+deploy_refresh*.log
+
+# 临时/调试脚本（下划线前缀）
+_*
+nul
+
+# 验证/测试产物
+cj*.txt
+cookies_test.txt
+deployed.html
+test-image.*
+*_test.html
+tn_*.html
+tn_notoken.html
+
+# 旧版/演示 HTML（非主程序）
+index.html
+p3.html
+training-notification-demo*.html
+notification-*.html
+notification-demo*.html
+tn_test.html
+tn_verify.html
+
+# 旧版本地服务端（8788 那套，已弃用）
+training-notification-server.js
+server-v10.js
+notification-server.js
+dataStore.js
+watchdog-node.js
+_boot.js
+v10-data/
+projects/
+backups/
+uploads/
+logs/
+tests/
+tmp_v10.js
+
+# 杂项本地文件
+whoami.txt
+app-settings.json
+groups.json
+templates.json
+channels.config.json
+
+# 部署/验证辅助文本
+deploy2.json
+deploy_out.json
+deploy_help.txt
+edgeone_help.txt
+makers_help.txt
+
+# EdgeOne 本地验证产物
+.edgeone-check.html
+.edgeone-cookies.txt
+
+# 测试图片
+test-*.jpg
+test-*.png
+
+# 演示/样例
+notification-demo*.md
+notification-showcase-demo*.md
+send-wecom-demo.js
+
+# 旧版补丁脚本
+patch_*.py
