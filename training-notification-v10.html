@@ -626,10 +626,11 @@
       return { success:true, url:pub.publicUrl, mime };
     }catch(e){ return {success:false, error:e.message}; }
   }
-  // 手动发送：调用 Supabase Edge Function（云端转发企微 webhook，规避浏览器 CORS / 密钥暴露）。
+// 手动发送：调用 Supabase Edge Function（云端转发企微 webhook，规避浏览器 CORS / 密钥暴露）。
   // Edge Function 未部署时降级：用 fetch mode='no-cors' 直接发给企微 webhook——
   // 浏览器无法读取响应（opaque），但请求**会送达**企微服务器，规避 CORS 阻断。
-  // status 始终以"已尝试发送"标记，并提示用户注意没有真实送达回执。
+  // [v10.2] 图片消息：改为企微 news（图文）msgtype —— 一个 article = title+description+picurl，
+  //       让图片和文案在同一条消息里整体呈现（替代之前 markdown 主体 + 单独 image 分段两段发送）
   async function cloudSend(items, testMode){
     if(!_sb) return { success:false, error:'未连接云端' };
     // 1) 优先走 Edge Function（拿到真实送达回执 + 图片分段）
@@ -638,24 +639,34 @@
       if(!error && data) return data;
     }catch(e){ /* 降级到 no-cors 直发 */ }
 
-    // 2) 降级到 no-cors 直发：把 markdown 里的 `![]()` 图片拆出来单独发 image msgtype。
-    // supabase storage 的 CORS=*，前端 fetch → ArrayBuffer → base64+md5（手写实现）→ 走企微 image 类型。
-    // 主消息的 ![alt](url) 保留，企微客户端对未识别 host 降级成链接，不影响可读性。
+    // 2) 降级到 no-cors 直发：图文混排用 news msgtype，无图用 markdown
     const SUPABASE_HOST_RE = /^https?:\/\/qyxxchifknfmvvyjvoue\.supabase\.co\/storage\/v1\/object\/public\//;
     async function postNoCors(webhookUrl, jsonBody){
       await fetch(webhookUrl, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify(jsonBody) });
     }
-    async function fetchImgAsBase64Md5(url){
-      const r = await fetch(url);
-      if(!r.ok) throw new Error('图下载失败 '+r.status);
-      const buf = await r.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      // base64
-      let bin='';const CHUNK=0x8000;
-      for(let i=0;i<bytes.length;i+=CHUNK){ bin+=String.fromCharCode.apply(null, bytes.subarray(i, i+CHUNK)); }
-      const b64 = btoa(bin);
-      const md5 = md5Hex(bytes);
-      return { b64, md5 };
+    // 从 markdown 中抽取 supabase 公网 URL 图片，提取顺序按出现先后
+    function extractImgs(content){
+      const arr = [];
+      const re = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
+      let m;
+      while((m = re.exec(content))!==null){
+        if(SUPABASE_HOST_RE.test(m[2])) arr.push({ alt: m[1]||'图片', url: m[2] });
+      }
+      return arr;
+    }
+    // 移除 markdown 里的图片语法（让 description 变成纯文本）。同时也清理因删除图片产生的多余空行。
+    function stripImgs(content){
+      return content.replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
+                    .replace(/[ \t]+\n/g, '\n')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .trim();
+    }
+    // 拆分纯文本为 title + description：title=第一段非空内容（最多 64 字），description=剩余（最多 ~512 字）
+    function splitForNews(text){
+      const lines = text.split(/\n+/);
+      const title = (lines.shift()||'通知').trim().slice(0, 64) || '通知';
+      const description = (lines.join('\n').trim() || text.trim().slice(0, 200)).slice(0, 512);
+      return { title, description };
     }
 
     const results = [];
@@ -663,36 +674,34 @@
       const webhook = it.webhookUrl;
       const rawContent = (testMode?'【测试】':'') + (it.content||'');
       try{
-        // 抽取 markdown 中所有图片 src（仅处理 supabase storage 公开 URL）
-        const imgSrcs = [];
-        const re = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
-        let m;
-        while((m = re.exec(rawContent))!==null){
-          if(SUPABASE_HOST_RE.test(m[2])) imgSrcs.push({ alt:m[1], url:m[2] });
-        }
-        // 先发主消息（markdown）
-        await postNoCors(webhook, { msgtype:'markdown', markdown:{ content: rawContent } });
-        // 再为每张图单独发 image 消息（确保企微客户端正常显示图片，而不是降级成链接）
-        const imageResults = [];
-        for(const img of imgSrcs){
-          try{
-            const { b64, md5 } = await fetchImgAsBase64Md5(img.url);
-            await postNoCors(webhook, { msgtype:'image', image:{ base64:b64, md5 } });
-            imageResults.push({ url:img.url, success:true });
-          }catch(ee){
-            imageResults.push({ url:img.url, success:false, error: ee.message || String(ee) });
+        const imgs = extractImgs(rawContent);
+        if(imgs.length === 0){
+          // 无图 → 直接发 markdown（企微 markdown 不支持内嵌图片，但纯文字足够清晰）
+          await postNoCors(webhook, { msgtype:'markdown', markdown:{ content: rawContent } });
+          results.push({ groupName: it.groupName, success:true, error:null, fallback:'no-cors' });
+        } else {
+          // 有图 → 整条文案 + 图片作为一个 news（图文）消息
+          const cleaned = stripImgs(rawContent);
+          const { title, description } = splitForNews(cleaned);
+          const articles = [];
+          // 第一篇：标题 + 描述 + 第一张图（大图）
+          articles.push({ title, description, picurl: imgs[0].url });
+          // 后续每张图：title=图片 alt（最多 64 字），description=空，picurl=图片 URL
+          for(let i=1;i<imgs.length;i++){
+            articles.push({ title: imgs[i].alt.slice(0,64)||('图片'+(i+1)), description:'', picurl: imgs[i].url });
           }
+          await postNoCors(webhook, { msgtype:'news', news:{ articles: articles.slice(0, 10) } });
+          results.push({
+            groupName: it.groupName,
+            success: true,
+            error: null,
+            warning: null,
+            imageResults: imgs.map(x=>({url:x.url, success:true})),
+            fallback: 'no-cors-news'
+          });
         }
-        results.push({
-          groupName: it.groupName,
-          success: true,
-          error: null,
-          warning: imageResults.some(x=>!x.success) ? ('图片分段：'+imageResults.filter(x=>!x.success).map(x=>x.error).join('; ')) : null,
-          imageResults,
-          fallback: 'no-cors'
-        });
       }catch(ee){
-        results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee), fallback:'no-cors' });
+        results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee) });
       }
     }
     return { success: results.every(r=>r.success), results, fallback:'no-cors' };
@@ -2020,19 +2029,20 @@
       // 修改了发送时间（用 change 而非 input，避免逐字符触发）：
       //   1) 清空 n.sentAudiences 中本受众的"已送达"标记，让 scheduler 在新时间窗口下重新触发
       //   2) 同时清云端 tn_sends 里该项目该节点该受众的相关记录（旧 sendId 不会再阻塞新窗口的 claim）
-      //   3) 自动取消「自动发送」勾选，要求运营人确认所有信息后再勾回
-      //   4) toast 提醒，避免"改了时间+其他还没改完就自动发出"的高风险场景
+      //   3) [v10.2] 保留 autoSend=true（运营人改时间 = 明确想在新时间点自动发送，再让他手动勾回有"忘勾则永不发"的风险）
+      //   4) toast 提示，如果改时间是有意取消自动发送，请手动取消勾选
       if(oldAt && newAt && oldAt !== newAt){
         // 清前端内存 + 清云端 tn_sends（避免 reconcile 又把旧"已发"状态回灌）
         if(Array.isArray(n.sentAudiences)) n.sentAudiences = n.sentAudiences.filter(x => x !== aud);
-        n.sentAt = null;
-        // 同时清掉「失败卡死」状态：sendAttempts 归零 + status 回到 draft，让 scheduler 在新时间窗口下重新尝试
-        ac.sendAttempts = 0;
-        ac.status = 'draft';
+        n.sentAt = null;          // 推送概览"实际发送"列同步清空，避免显示旧时间误导
+        ac.sendAttempts = 0;       // 失败计数归零
         ac.lastError = '';
+        ac.status = 'draft';
         delete ac._lastTriggerSig;
-        ac.autoSend = false;
-        // 异步清云端 tn_sends 该节点所有 phase 记录（main/reminder1d/reminder2h），不阻塞 UI
+        // 自动取消「自动发送」勾选 —— 更安全的设计：用户改时间 = 主动干预，自动发送更复杂场景可能带来打扰
+        // 但运营人改时间往往就是想"重新发一次"，所以再勾回是默认预期
+        // 改用：保留 autoSend=true + toast 提示，让运营人自己决定要不要取消
+        // 异步清云端 tn_sends
         if(_sb && currentProjectId && n.id){
           const idPrefix = currentProjectId + ':' + n.id + ':' + aud + ':';
           _sb.from('tn_sends').delete().like('id', idPrefix + '%').then(({error})=>{
@@ -2041,7 +2051,7 @@
         }
         scheduleAutoSave();
         render();
-        toast('已修改发送时间：自动发送已暂停，请确认所有信息后再勾选「自动发送」', {tone:'warn'});
+        toast('已修改发送时间：将在新时间自动发出（若不想自动发送请取消勾选「自动发送」）', {tone:'warn'});
         return;
       }
       scheduleAutoSave();
@@ -2645,9 +2655,10 @@
   function computeRowStatus(n, aud){
     const ac = n.audienceContent && n.audienceContent[aud];
     if(!ac) return { status:'draft', err:'', sentAt:'' };
-    // 已发送：由 n.sentAudiences 包含 aud 决定
-    if(Array.isArray(n.sentAudiences) && n.sentAudiences.includes(aud)){
-      return { status:'sent', err:'', sentAt:n.sentAt||'' };
+    // 已发送：必须同时满足 (1) sentAudiences 含 aud 且 (2) sentAt 实际存在
+    // (避免"历史残留 sentAuds=true 但 sentAt=空"显示成"已发送"+实际发送"—"的矛盾)
+    if(Array.isArray(n.sentAudiences) && n.sentAudiences.includes(aud) && n.sentAt){
+      return { status:'sent', err:'', sentAt:n.sentAt };
     }
     // 已暂停：运营人改过时间/文案，自动发送被取消且未重新勾选 → 区分"草稿"避免误判
     if(ac.enabled && ac.autoSend===false && ac.notifyAt){
@@ -2750,6 +2761,8 @@
           const enabledAuds = ['student','lecturer','manager'].filter(a=>n.audienceContent&&n.audienceContent[a]&&n.audienceContent[a].enabled);
           const sentAuds = Array.isArray(n.sentAudiences) ? n.sentAudiences : [];
           const allSent = enabledAuds.length>0 && enabledAuds.every(a=>sentAuds.includes(a));
+          // [v10.2] 临近节点是「待发送提示」：已发的不再混入，已发状态归推送概览展示
+          if(allSent) return;
           upcoming.push({proj:(p.projectName||p.name)||'未命名项目', stage:s.name||'阶段', notif:n.name||'通知', time:notifyAt, diff, auds, r1, r2, pid:p.id||'', nid:n.id, sid:s.id, allSent, sentAt:n.sentAt||''});
         });
       });
