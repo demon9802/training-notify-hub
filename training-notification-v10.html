@@ -1132,6 +1132,19 @@
       if(idx >= 0) projects[idx] = snapshot;
       else projects.push(snapshot);
     };
+    // [v10.2 root-fix] silentSave 完成后追加一次即时 overview 刷新（不破坏 input 焦点）。
+    // 由于 silentSave 的内存 projects[] 已与最新 merged 对齐，再触发一次 pollOverview
+    // 即可让"推送概览"列（状态/实际发送）立刻更新，免等 12s 轮询。
+    const triggerInstantOverviewRefresh = ()=>{
+      queueMicrotask(()=>{
+        try{
+          if(typeof pollOverview==='function') pollOverview();
+          // [v10.2 root-fix] silentSave 后立即跑一次客户端 send-due 兜底，
+          // 让"刚改完时间 + 立即生效"成为默认行为，不用等下一次 60s 周期。
+          if(typeof clientSendDue==='function') clientSendDue();
+        }catch(e){}
+      });
+    };
     if(SERVER_MODE){
       try{
         // 写前先拉服务端权威字段（scheduler 也会写 sentAt/sentAudiences），merge 后再写
@@ -1155,6 +1168,7 @@
               || (ae.tagName === 'INPUT' && !['button','submit','checkbox','radio','file'].includes(ae.type))
             );
         if(!inForm) render();
+        triggerInstantOverviewRefresh();
       }catch(e){ const tip=$('#saveTip'); if(tip) tip.textContent = '保存失败：'+e.message; toast('保存失败，请检查登录态或服务端', {tone:'warn'}); }
     }else if(_sb){
       // 写云端前先拉一次最新 cloud，用 mergeCloudAuthorityFields 把 Action/scheduler 写的
@@ -1177,6 +1191,7 @@
             || (ae.tagName === 'INPUT' && !['button','submit','checkbox','radio','file'].includes(ae.type))
           );
       if(!inForm) render();
+      triggerInstantOverviewRefresh();
     }else{
       localStorage.setItem('tn_v10_'+currentProjectId, JSON.stringify(project));
       let list = JSON.parse(localStorage.getItem('tn_v10_projects')||'[]');
@@ -1193,6 +1208,7 @@
             || (ae.tagName === 'INPUT' && !['button','submit','checkbox','radio','file'].includes(ae.type))
           );
       if(!inForm) render();
+      triggerInstantOverviewRefresh();
     }
   }
 
@@ -1204,6 +1220,98 @@
   }
   function setHomeSection(s){ homeSection=s; render(); }
   function setEditSection(s){ editSection=s; render(); }
+
+  // ---------- 客户端 send-due 兜底 ----------
+  // [v10.2 root-fix] GitHub Actions schedule 在新仓库（无 star / 无 watch）实际触发率不稳定，
+  // 我们用纯客户端心跳兜底：每 60s 扫一遍 projects[]，对 "now 到 now+30min" 内的 autoSend=true
+  // 且未发送过的节点，立即调 cloudSend()，再用 tn_sends 主键做幂等（与 Action 共用契约）。
+  let clientSendDueInFlight = false;
+  async function clientSendDue(){
+    if(!_sb) return;
+    if(clientSendDueInFlight) return;     // 防重入
+    clientSendDueInFlight = true;
+    try{
+      const now = Date.now();
+      // 提前载入全局群组（cloudSend 里要拼 webhookUrl）
+      const groups = (await cloudGet('global_groups')) || [];
+      // 一次性拉已 sent 的 tn_sends 行，避免反复查
+      let sentIds = new Set();
+      try{
+        const { data } = await _sb.from('tn_sends').select('id').eq('status','sent');
+        sentIds = new Set((data||[]).map(x=>x.id));
+      }catch(e){ /* 单条失败也继续走 */ }
+      for(const p of (projects||[])){
+        if(!p || !p.stages) continue;
+        for(const s of p.stages){
+          for(const n of (s.notifications||[])){
+            for(const a of AUDIENCES){
+              const ac = n.audienceContent && n.audienceContent[a];
+              if(!ac || !ac.enabled || !ac.notifyAt) continue;
+              if(ac.autoSend===false) continue;           // 用户显式暂停的不发
+              const at = new Date(ac.notifyAt).getTime();
+              if(isNaN(at)) continue;
+              const diffMs = now - at;
+              // 窗口：已经到点 30s..30min 内。避免和 Action 的 6h 窗口大面积重叠，但留出抢跑空间
+              if(diffMs < -30*1000 || diffMs > 30*60*1000) continue;
+              // 已发送过（双重判定：内存 / 云端 tn_sends）
+              if(Array.isArray(n.sentAudiences) && n.sentAudiences.includes(a) && n.sentAt) continue;
+              const pid = p.id || currentProjectId || '';
+              const sendId = `${pid}:${n.id}:${a}:main`;
+              if(sentIds.has(sendId)) continue;
+              try{
+                const { data: existing } = await _sb.from('tn_sends').select('id').eq('id', sendId).single();
+                if(existing){ sentIds.add(sendId); continue; }
+              }catch(e){ /* 不阻断流程 */ }
+              // claim：用 tn_sends 主键做幂等；如果 Action 也试图发，会因为 23505 失败跳过
+              const { error: claimErr } = await _sb.from('tn_sends').insert({
+                id: sendId, status:'claimed',
+                claimed_by:'client-'+(window.__tn_client_id||'wb'),
+                claimed_at:new Date().toISOString()
+              });
+              if(claimErr){
+                if(claimErr.code==='23505'){ sentIds.add(sendId); continue; }
+                console.warn('[clientSendDue] claim failed', sendId, claimErr.message);
+                continue;
+              }
+              // 拼装 items（替换 ac 内容里的占位符；buildItemsForAudience 会套 globalGroups）
+              const items = buildItemsForAudience(s, n, a);
+              if(items.length===0){
+                await _sb.from('tn_sends').update({
+                  status:'failed', last_error:'无启用目标群',
+                  updated_at:new Date().toISOString()
+                }).eq('id', sendId);
+                continue;
+              }
+              const j = await cloudSend(items, false);
+              if(j && j.success){
+                const sentAt = new Date().toISOString();
+                await _sb.from('tn_sends').update({
+                  status:'sent', sent_at:sentAt, updated_at:sentAt
+                }).eq('id', sendId);
+                sentIds.add(sendId);
+                // 内存同步：n.sentAudiences + sentAt + status
+                if(!Array.isArray(n.sentAudiences)) n.sentAudiences = [];
+                if(!n.sentAudiences.includes(a)) n.sentAudiences.push(a);
+                n.sentAt = sentAt;
+                n.status = 'sent';
+                console.log('[clientSendDue] OK', sendId);
+                // 顺手触发一次轻量 UI 刷新（不破坏用户在编辑状态）
+                if(typeof pollOverview==='function') pollOverview();
+              } else {
+                const err = (j && (j.error || (j.results||[]).map(x=>x.error).filter(Boolean).join('; '))) || '未知错误';
+                await _sb.from('tn_sends').update({
+                  status:'failed', last_error:err,
+                  updated_at:new Date().toISOString()
+                }).eq('id', sendId);
+                console.warn('[clientSendDue] FAIL', sendId, err);
+              }
+            }
+          }
+        }
+      }
+    }catch(e){ console.warn('[clientSendDue] error:', e.message); }
+    finally{ clientSendDueInFlight = false; }
+  }
 
   // 推送概览实时轮询：服务端 scheduler 写入 sentAt/sentAudiences 后，前端内存里的
   // project/projects[] 是陈旧的——靠 silentSave 同步只在用户编辑时触发，没法覆盖 scheduler 发完通知的更新。
@@ -1306,11 +1414,20 @@
     //    关键修复：旧版只在 isOverviewView 才启动 timer，导致用户停在编辑视图时 cloud 更新看不到。
     // 2) DOM 渲染：仍只在 isOverviewView 触发 renderHomeMain / renderProjectMain，
     //    避免在用户编辑时强制重渲染造成光标跳动、编辑冲突。
+    // [v10.2 root-fix] 客户端 send-due 兜底定时器：
+    // GitHub Actions schedule 在新仓库（小流量、零 star、零 watch）的实际触发率不稳定。
+    // 我们给客户端加一个 60s 心跳：在 now 到 now+30min 窗口内的"autoSend=true 且未发送"节点，立即用 cloudSend 直发。
+    // 仍然复用 Action 一样的 tn_sends 主键做 claim 幂等，Action / 客户端不会重复发送。
     const _sbReady = !SERVER_MODE && !!_sb;
     if(_sbReady || SERVER_MODE){
       if(!overviewPollTimer){
         overviewPollTimer = setInterval(pollOverview, 8000);
         pollOverview();
+      }
+      if(typeof window.__tn_client_send_due_running==='undefined'){
+        window.__tn_client_send_due_running = true;
+        setInterval(clientSendDue, 60_000);
+        setTimeout(clientSendDue, 5000);  // 首跑：5s 后先扫一遍，把过期未发的补上
       }
     }else{
       if(overviewPollTimer){ clearInterval(overviewPollTimer); overviewPollTimer = null; }
@@ -2026,23 +2143,20 @@
       const oldAt = ac.notifyAt;
       const newAt = e.target.value;
       ac.notifyAt = newAt;
-      // 修改了发送时间（用 change 而非 input，避免逐字符触发）：
-      //   1) 清空 n.sentAudiences 中本受众的"已送达"标记，让 scheduler 在新时间窗口下重新触发
-      //   2) 同时清云端 tn_sends 里该项目该节点该受众的相关记录（旧 sendId 不会再阻塞新窗口的 claim）
-      //   3) [v10.2] 保留 autoSend=true（运营人改时间 = 明确想在新时间点自动发送，再让他手动勾回有"忘勾则永不发"的风险）
-      //   4) toast 提示，如果改时间是有意取消自动发送，请手动取消勾选
+      // [v10.2 root-fix] 改时间默认「取消勾选自动发送」——
+      //   风险源：运营人没能在设定时间前改好通知就直接发草稿。
+      //   旧版保留 autoSend=true 让用户主动取消，违背"安全默认"原则。
+      //   现在改为默认暂停，需用户主动重新勾选；UI 顶部已通过 auto-paused-chip 提示，无需冗长 toast。
       if(oldAt && newAt && oldAt !== newAt){
-        // 清前端内存 + 清云端 tn_sends（避免 reconcile 又把旧"已发"状态回灌）
+        // 1) 清前端内存 + 云端 tn_sends，避免 reconcile 把旧"已发"状态回灌
         if(Array.isArray(n.sentAudiences)) n.sentAudiences = n.sentAudiences.filter(x => x !== aud);
-        n.sentAt = null;          // 推送概览"实际发送"列同步清空，避免显示旧时间误导
+        n.sentAt = null;          // 推送概览"实际发送"列同步清空
         ac.sendAttempts = 0;       // 失败计数归零
         ac.lastError = '';
-        ac.status = 'draft';
+        ac.status = 'paused';
+        ac.autoSend = false;       // 默认取消勾选（更安全）
         delete ac._lastTriggerSig;
-        // 自动取消「自动发送」勾选 —— 更安全的设计：用户改时间 = 主动干预，自动发送更复杂场景可能带来打扰
-        // 但运营人改时间往往就是想"重新发一次"，所以再勾回是默认预期
-        // 改用：保留 autoSend=true + toast 提示，让运营人自己决定要不要取消
-        // 异步清云端 tn_sends
+        // 2) 异步清云端 tn_sends（旧 sendId 不会再阻塞新窗口的 claim）
         if(_sb && currentProjectId && n.id){
           const idPrefix = currentProjectId + ':' + n.id + ':' + aud + ':';
           _sb.from('tn_sends').delete().like('id', idPrefix + '%').then(({error})=>{
@@ -2051,7 +2165,8 @@
         }
         scheduleAutoSave();
         render();
-        toast('已修改发送时间：将在新时间自动发出（若不想自动发送请取消勾选「自动发送」）', {tone:'warn'});
+        // 单行 warn 提示，不换行
+        toast('已修改发送时间，自动发送已暂停；确认信息无误后请勾选「自动发送」', {tone:'warn'});
         return;
       }
       scheduleAutoSave();
@@ -2471,8 +2586,15 @@
     }else if(_sb){
       const j = await cloudSend(items, testMode);
       if(j && j.success){
-        toast('发送成功：'+items.map(i=>i.groupName).join('、'));
-        if(j.fallback==='no-cors') toast('未部署 Edge Function，本次为 no-cors 直发（无企微回执），请到群里确认收到。', {tone:'warn'});
+        const groups = items.map(i=>i.groupName).join('、');
+        // [v10.2 root-fix] 不再使用"未部署 Edge Function"这种带贬义的提示。
+        // 现实：no-cors 直发请求**已送达**企微服务器，前端无法读回执是浏览器限制（不是产品缺陷）。
+        // 用户需到群里确认是否真收到——这是诚实的提示，不是告警。
+        if(j.fallback==='no-cors' || j.fallback==='no-cors-news'){
+          toast('已发送到 '+ groups +'（请求已送达企微服务器，请到群里确认是否收到）');
+        } else {
+          toast('发送成功：'+ groups);
+        }
       }
       else { toast('发送失败：'+((j&&j.error)||'未知错误')); }
     }else{
