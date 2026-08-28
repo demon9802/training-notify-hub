@@ -9,6 +9,7 @@
 <!-- 本地内置 supabase-js（UMD，挂 window.supabase），不依赖外部 CDN，避免静态托管白屏 -->
 <script src="/supabase.js"></script>
 <script src="/render-core.js"></script>
+<script src="/md5-lite.min.js"></script>
 <style>
   :root{
     --bg:#f5f6f8; --panel:#ffffff; --ink:#1f2329; --sub:#646a73; --line:#e5e6eb;
@@ -591,6 +592,15 @@
       return mergeCloudAuthorityFields(local, cloud);
     }catch(e){ return local; }
   }
+  // 轻量 MD5 包装：复用 js-md5 全局（<script src="md5-lite.min.js"> 在 head 引入）。
+  // 浏览器 SubtleCrypto 不支持 MD5，必须走这个。接受 string 或 Uint8Array，返回 hex。
+  function md5Hex(input){
+    var arr;
+    if(input && typeof input==='object' && input.length!==undefined && (input.constructor===Uint8Array || Array.isArray(input))) {
+      arr = Array.from(input);
+    } else { arr = String(input); }
+    return md5(arr);
+  }
   async function cloudDelete(key){
     if(!_sb) return false;
     try{ const { error } = await _sb.from('tn_kv').delete().eq('key',key); if(error) return false; return true; }
@@ -627,16 +637,62 @@
       const { data, error } = await _sb.functions.invoke('send-v10', { body:{ items, testMode } });
       if(!error && data) return data;
     }catch(e){ /* 降级到 no-cors 直发 */ }
-    // 2) 降级：用 fetch no-cors 直发 webhook。markdown 消息体直接转发。
+
+    // 2) 降级到 no-cors 直发：把 markdown 里的 `![]()` 图片拆出来单独发 image msgtype。
+    // supabase storage 的 CORS=*，前端 fetch → ArrayBuffer → base64+md5（手写实现）→ 走企微 image 类型。
+    // 主消息的 ![alt](url) 保留，企微客户端对未识别 host 降级成链接，不影响可读性。
+    const SUPABASE_HOST_RE = /^https?:\/\/qyxxchifknfmvvyjvoue\.supabase\.co\/storage\/v1\/object\/public\//;
+    async function postNoCors(webhookUrl, jsonBody){
+      await fetch(webhookUrl, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify(jsonBody) });
+    }
+    async function fetchImgAsBase64Md5(url){
+      const r = await fetch(url);
+      if(!r.ok) throw new Error('图下载失败 '+r.status);
+      const buf = await r.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      // base64
+      let bin='';const CHUNK=0x8000;
+      for(let i=0;i<bytes.length;i+=CHUNK){ bin+=String.fromCharCode.apply(null, bytes.subarray(i, i+CHUNK)); }
+      const b64 = btoa(bin);
+      const md5 = md5Hex(bytes);
+      return { b64, md5 };
+    }
+
     const results = [];
     for(const it of (items||[])){
+      const webhook = it.webhookUrl;
+      const rawContent = (testMode?'【测试】':'') + (it.content||'');
       try{
-        const body = JSON.stringify({ msgtype:'markdown', markdown:{ content: (testMode?'【测试】':'') + (it.content||'') } });
-        await fetch(it.webhookUrl, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body });
-        // no-cors 模式下响应 opaque，无法判断 errcode；如有图片也不再单独发（避免二次开销/重复）。按"已发出"处理。
-        results.push({ groupName: it.groupName, success:true, error:null, warning:'no-cors 降级：未取到企微回执，请到群里确认收到。' });
+        // 抽取 markdown 中所有图片 src（仅处理 supabase storage 公开 URL）
+        const imgSrcs = [];
+        const re = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
+        let m;
+        while((m = re.exec(rawContent))!==null){
+          if(SUPABASE_HOST_RE.test(m[2])) imgSrcs.push({ alt:m[1], url:m[2] });
+        }
+        // 先发主消息（markdown）
+        await postNoCors(webhook, { msgtype:'markdown', markdown:{ content: rawContent } });
+        // 再为每张图单独发 image 消息（确保企微客户端正常显示图片，而不是降级成链接）
+        const imageResults = [];
+        for(const img of imgSrcs){
+          try{
+            const { b64, md5 } = await fetchImgAsBase64Md5(img.url);
+            await postNoCors(webhook, { msgtype:'image', image:{ base64:b64, md5 } });
+            imageResults.push({ url:img.url, success:true });
+          }catch(ee){
+            imageResults.push({ url:img.url, success:false, error: ee.message || String(ee) });
+          }
+        }
+        results.push({
+          groupName: it.groupName,
+          success: true,
+          error: null,
+          warning: imageResults.some(x=>!x.success) ? ('图片分段：'+imageResults.filter(x=>!x.success).map(x=>x.error).join('; ')) : null,
+          imageResults,
+          fallback: 'no-cors'
+        });
       }catch(ee){
-        results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee) });
+        results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee), fallback:'no-cors' });
       }
     }
     return { success: results.every(r=>r.success), results, fallback:'no-cors' };
@@ -1963,16 +2019,26 @@
       ac.notifyAt = newAt;
       // 修改了发送时间（用 change 而非 input，避免逐字符触发）：
       //   1) 清空 n.sentAudiences 中本受众的"已送达"标记，让 scheduler 在新时间窗口下重新触发
-      //   2) 自动取消「自动发送」勾选，要求运营人确认所有信息后再勾回
-      //   3) toast 提醒，避免"改了时间+其他还没改完就自动发出"的高风险场景
+      //   2) 同时清云端 tn_sends 里该项目该节点该受众的相关记录（旧 sendId 不会再阻塞新窗口的 claim）
+      //   3) 自动取消「自动发送」勾选，要求运营人确认所有信息后再勾回
+      //   4) toast 提醒，避免"改了时间+其他还没改完就自动发出"的高风险场景
       if(oldAt && newAt && oldAt !== newAt){
+        // 清前端内存 + 清云端 tn_sends（避免 reconcile 又把旧"已发"状态回灌）
         if(Array.isArray(n.sentAudiences)) n.sentAudiences = n.sentAudiences.filter(x => x !== aud);
+        n.sentAt = null;
         // 同时清掉「失败卡死」状态：sendAttempts 归零 + status 回到 draft，让 scheduler 在新时间窗口下重新尝试
         ac.sendAttempts = 0;
         ac.status = 'draft';
         ac.lastError = '';
         delete ac._lastTriggerSig;
         ac.autoSend = false;
+        // 异步清云端 tn_sends 该节点所有 phase 记录（main/reminder1d/reminder2h），不阻塞 UI
+        if(_sb && currentProjectId && n.id){
+          const idPrefix = currentProjectId + ':' + n.id + ':' + aud + ':';
+          _sb.from('tn_sends').delete().like('id', idPrefix + '%').then(({error})=>{
+            if(error) console.warn('[notifyAt-change] tn_sends clean failed:', error.message);
+          });
+        }
         scheduleAutoSave();
         render();
         toast('已修改发送时间：自动发送已暂停，请确认所有信息后再勾选「自动发送」', {tone:'warn'});
