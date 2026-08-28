@@ -22,6 +22,7 @@ if (!url || !key) {
 }
 const sb = createClient(url, key, { auth: { persistSession: false } });
 const RUN_ID = `gha-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+console.log('[boot] Node=' + process.version + ' RUN_ID=' + RUN_ID + ' TZ=' + (process.env.TZ || ''));
 const AUDIENCES = ['student', 'lecturer', 'manager'];
 const AUD_LABEL = { student: '学员', lecturer: '讲师', manager: '管理' };
 const NODE_LABEL = { start: '启动', midway: '中程', due: '截止', post: '截止后' };
@@ -82,6 +83,9 @@ async function main() {
   const { data: projRows, error } = await sb.from('tn_kv').select('key,data').like('key', 'project:%');
   if (error) { console.error('读取项目失败', error.message); process.exit(1); }
 
+  console.log('[load] projects=' + (projRows||[]).length + ' groups=' + groups.length + ' sent-history=' + (sentRows||[]).length + ' reminderWebhook=' + (reminderWebhook ? 'set' : 'none'));
+  let totalReconciled = 0;
+
   // 先一次性拉今天所有已 sent 的 tn_sends，用于 reconcile 阶段把 a 补回 n.sentAudiences。
   // tn_sends 表只有 id, status, claimed_by, claimed_at, sent_at, last_error, updated_at；
   // project_id / notification_id / audience 全部从 id 字符串里解析（格式：<pid>:<nid>:<aud>:<phase>）。
@@ -98,25 +102,33 @@ async function main() {
     sentMap.get(k).add(aud);
   }
 
-  const now = new Date();
-  for (const row of projRows || []) {
-    const projectId = row.key.replace(/^project:/, '');
-    const project = row.data;
-    let changed = false;
+    const now = new Date();
+    for (const row of projRows || []) {
+      const projectId = row.key.replace(/^project:/, '');
+      const project = row.data;
+      let changed = false;
+      const reasons = { noac:0, disabled:0, noNotifyAt:0, badDate:0, future:0, pastWindow:0, noGroup:0, hit:0 };
+      let nodeCount = 0;
 
-    // 阶段 1：扫描 + 发送当前应发的通知
-    for (const stage of (project.stages || [])) {
-      for (const n of (stage.notifications || [])) {
-        // 受众级发送：用 ac.notifyAt 判断窗口，n 自身不需要 notifyAt。
-        // 旧逻辑用 n.notifyAt 但数据里只有 ac.notifyAt，导致整批被 continue 跳过、空跑。
-        for (const a of AUDIENCES) {
-          const ac = (n.audienceContent || {})[a];
-          if (!ac || !ac.enabled || !ac.notifyAt) continue;
-          const at = new Date(ac.notifyAt);
-          if (isNaN(at.getTime())) continue;
+      // 阶段 1：扫描 + 发送当前应发的通知
+      for (const stage of (project.stages || [])) {
+        for (const n of (stage.notifications || [])) {
+          nodeCount++;
+          // 受众级发送：用 ac.notifyAt 判断窗口，n 自身不需要 notifyAt。
+          // 旧逻辑用 n.notifyAt 但数据里只有 ac.notifyAt，导致整批被 continue 跳过、空跑。
+          for (const a of AUDIENCES) {
+            const ac = (n.audienceContent || {})[a];
+            if (!ac) { reasons.noac++; continue; }
+            if (!ac.enabled) { reasons.disabled++; continue; }
+            if (!ac.notifyAt) { reasons.noNotifyAt++; continue; }
+            const at = new Date(ac.notifyAt);
+            if (isNaN(at.getTime())) { reasons.badDate++; continue; }
+            if (now < at) { reasons.future++; continue; }
+            if (now > addHours(at, 6)) { reasons.pastWindow++; continue; }
+            if (!(ac.targetGroups || []).length) { reasons.noGroup++; continue; }
+            reasons.hit++;
 
-          // 主发送：到点后 6 小时内
-          if (now >= at && now <= addHours(at, 6)) {
+            // 主发送：到点后 6 小时内
             const sendId = `${projectId}:${n.id}:${a}:main`;
             if (await claim(sendId)) {
               const targets = (ac.targetGroups || []).map(id => groups.find(g => g.id === id)).filter(Boolean);
@@ -137,12 +149,15 @@ async function main() {
                 n.status = 'sent'; n.sentAt = iso(new Date());
                 if (!n.sentAudiences) n.sentAudiences = [];
                 if (!n.sentAudiences.includes(a)) n.sentAudiences.push(a);
+                console.log('[send] OK   ' + projectId + '/' + n.id + '/' + a + ' groups=' + targets.length);
               } else {
                 await markSent(sendId, 'failed', { last_error: errs.join('; ') });
+                console.log('[send] FAIL ' + projectId + '/' + n.id + '/' + a + ' ' + errs.join('; '));
               }
               changed = true;
+            } else {
+              console.log('[send] SKIP-claimed ' + projectId + '/' + n.id + '/' + a);
             }
-          }
 
           // 提醒 T-1 天（确认节点）
           if (!n.reminder1dSentAt && now >= addHours(at, -24) && now < at && reminderWebhook) {
@@ -150,8 +165,8 @@ async function main() {
             if (await claim(sendId)) {
               const content = `【节点确认】${project.projectName || '项目'} · ${stage.name || '阶段'} · ${NODE_LABEL[n.node] || ''}通知（${AUD_LABEL[a]}）\n发送时间：${ac.notifyAt}\n请确认文案与受众已就绪。`;
               const r = await sendWeCom(reminderWebhook, { msgtype: 'markdown', markdown: { content } });
-              if (r.ok) { await markSent(sendId, 'sent'); n.reminder1dSentAt = iso(new Date()); }
-              else { await markSent(sendId, 'failed', { last_error: r.warn }); }
+              if (r.ok) { await markSent(sendId, 'sent'); n.reminder1dSentAt = iso(new Date()); console.log('[reminder1d] OK ' + projectId + '/' + n.id + '/' + a); }
+              else { await markSent(sendId, 'failed', { last_error: r.warn }); console.log('[reminder1d] FAIL ' + projectId + '/' + n.id + '/' + a + ' ' + r.warn); }
               changed = true;
             }
           }
@@ -162,8 +177,8 @@ async function main() {
             if (await claim(sendId)) {
               const content = `【发送前测试】${project.projectName || '项目'} · ${stage.name || '阶段'} · ${NODE_LABEL[n.node] || ''}通知（${AUD_LABEL[a]}）将在 ${ac.notifyAt} 发送，以下为测试版全文：\n\n${(() => { try { return RC.renderContent(project, stage, n, ac) || ac.content || ''; } catch (e) { return ac.content || ''; } })()}`;
               const r = await sendWeCom(reminderWebhook, { msgtype: 'markdown', markdown: { content } });
-              if (r.ok) { await markSent(sendId, 'sent'); n.reminder2hSentAt = iso(new Date()); }
-              else { await markSent(sendId, 'failed', { last_error: r.warn }); }
+              if (r.ok) { await markSent(sendId, 'sent'); n.reminder2hSentAt = iso(new Date()); console.log('[reminder2h] OK ' + projectId + '/' + n.id + '/' + a); }
+              else { await markSent(sendId, 'failed', { last_error: r.warn }); console.log('[reminder2h] FAIL ' + projectId + '/' + n.id + '/' + a + ' ' + r.warn); }
               changed = true;
             }
           }
@@ -208,15 +223,17 @@ async function main() {
           const r2key = projectId + ':' + n.id + ':' + Array.from(sentAuds)[0] + ':reminder2h';
           if(sentAtMap.has(r2key) && !n.reminder2hSentAt){ n.reminder2hSentAt = sentAtMap.get(r2key); nChanged = true; }
         }
-        if (nChanged) changed = true;
+        if (nChanged) { changed = true; totalReconciled++; }
       }
     }
 
+    console.log('[scan] project=' + projectId + ' nodes=' + nodeCount + ' reasons=' + JSON.stringify(reasons));
     if (changed) {
       await sb.from('tn_kv').update({ data: project, updated_at: iso(new Date()) }).eq('key', row.key);
       console.log('已更新项目', projectId);
     }
   }
+  console.log('[reconcile] 回灌 ' + totalReconciled + ' 个通知的 sentAudiences');
   console.log('云端发送任务完成。RUN_ID=', RUN_ID);
 }
 main().catch(e => { console.error('FATAL', e); process.exit(1); });
