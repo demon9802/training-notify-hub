@@ -83,15 +83,15 @@ async function main() {
   const { data: projRows, error } = await sb.from('tn_kv').select('key,data').like('key', 'project:%');
   if (error) { console.error('读取项目失败', error.message); process.exit(1); }
 
-  console.log('[load] projects=' + (projRows||[]).length + ' groups=' + groups.length + ' sent-history=' + (sentRows||[]).length + ' reminderWebhook=' + (reminderWebhook ? 'set' : 'none'));
-  let totalReconciled = 0;
-
   // 先一次性拉今天所有已 sent 的 tn_sends，用于 reconcile 阶段把 a 补回 n.sentAudiences。
   // tn_sends 表只有 id, status, claimed_by, claimed_at, sent_at, last_error, updated_at；
   // project_id / notification_id / audience 全部从 id 字符串里解析（格式：<pid>:<nid>:<aud>:<phase>）。
   // 这样即使前端 silentSave 用 stale 内存覆盖 tn_kv，下一次 Action 跑也能修复过来。
   const { data: sentRows } = await sb.from('tn_sends').select('id,status').eq('status', 'sent');
   const sentMap = new Map(); // key: projectId::notificationId → Set(audience)
+  let totalReconciled = 0;
+
+  console.log('[load] projects=' + (projRows||[]).length + ' groups=' + groups.length + ' sent-history=' + (sentRows||[]).length + ' reminderWebhook=' + (reminderWebhook ? 'set' : 'none'));
   for (const r of (sentRows || [])) {
     const m = /^([^:]+):([^:]+):([^:]+):(main|reminder1d|reminder2h)$/.exec(r.id || '');
     if (!m) continue;
