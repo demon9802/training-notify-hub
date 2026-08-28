@@ -71,6 +71,7 @@ makers_help.txt
 # EdgeOne 本地验证产物
 .edgeone-check.html
 .edgeone-cookies.txt
+.edgeone-check/
 
 # 测试图片
 test-*.jpg
