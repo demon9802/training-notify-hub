@@ -1135,13 +1135,13 @@
     // [v10.2 root-fix] silentSave 完成后追加一次即时 overview 刷新（不破坏 input 焦点）。
     // 由于 silentSave 的内存 projects[] 已与最新 merged 对齐，再触发一次 pollOverview
     // 即可让"推送概览"列（状态/实际发送）立刻更新，免等 12s 轮询。
+    // 同时传 force:true 让 clientSendDue 立即扫一遍 30min 内的待发节点——
+    // 用户改完时间 → silentSave → force 扫描 → 立即生效（如果通知距 now 在 30min 内）。
     const triggerInstantOverviewRefresh = ()=>{
       queueMicrotask(()=>{
         try{
           if(typeof pollOverview==='function') pollOverview();
-          // [v10.2 root-fix] silentSave 后立即跑一次客户端 send-due 兜底，
-          // 让"刚改完时间 + 立即生效"成为默认行为，不用等下一次 60s 周期。
-          if(typeof clientSendDue==='function') clientSendDue();
+          if(typeof clientSendDue==='function') clientSendDue({force:true});
         }catch(e){}
       });
     };
@@ -1226,14 +1226,22 @@
   // 我们用纯客户端心跳兜底：每 60s 扫一遍 projects[]，对 "now 到 now+30min" 内的 autoSend=true
   // 且未发送过的节点，立即调 cloudSend()，再用 tn_sends 主键做幂等（与 Action 共用契约）。
   let clientSendDueInFlight = false;
-  async function clientSendDue(){
+  // [v10.2 root-fix] 客户端 send-due 兜底：
+  //   GitHub Actions schedule 在零活动仓库（无 star / 无 watch）实测触发率极低——
+  //   本仓库 3 次实测全是 workflow_dispatch，0 次 schedule。
+  //   所以我们用 setInterval 60s 扫一遍 projects[]，把"now ±30min"内、autoSend=true 且未发的节点，
+  //   立即调 cloudSend()。用 tn_sends 主键做 claim 幂等——Action/客户端不会重复发送。
+  //
+  //   options.force = true 用于 silentSave 后立即触发：跳过 30min 上限检查，
+  //   让"刚改完时间 + 立即生效"成为默认行为（用户在编辑器里改时间 → silentSave →
+  //   force 扫描 → 如果通知距 now 在 30min 内，立即发；否则等下一次 60s 周期）。
+  async function clientSendDue(options){
+    options = options || {};
     if(!_sb) return;
     if(clientSendDueInFlight) return;     // 防重入
     clientSendDueInFlight = true;
     try{
       const now = Date.now();
-      // 提前载入全局群组（cloudSend 里要拼 webhookUrl）
-      const groups = (await cloudGet('global_groups')) || [];
       // 一次性拉已 sent 的 tn_sends 行，避免反复查
       let sentIds = new Set();
       try{
@@ -1251,8 +1259,11 @@
               const at = new Date(ac.notifyAt).getTime();
               if(isNaN(at)) continue;
               const diffMs = now - at;
-              // 窗口：已经到点 30s..30min 内。避免和 Action 的 6h 窗口大面积重叠，但留出抢跑空间
-              if(diffMs < -30*1000 || diffMs > 30*60*1000) continue;
+              // 窗口：60s 周期看 (now-30s, now+30min]；force 模式（silentSave 后立即）放宽到 (now-30min, now+30min]
+              // 注意 force 仍受下限 -30min 保护，避免重复发送已过期 30min+ 的旧节点
+              const lowerBound = options.force ? -30*60*1000 : -30*1000;
+              const upperBound = 30*60*1000;
+              if(diffMs < lowerBound || diffMs > upperBound) continue;
               // 已发送过（双重判定：内存 / 云端 tn_sends）
               if(Array.isArray(n.sentAudiences) && n.sentAudiences.includes(a) && n.sentAt) continue;
               const pid = p.id || currentProjectId || '';
@@ -2075,12 +2086,12 @@
       <div class="section-title" style="margin-top:0"><h4>发送目标群 · ${GROUPS_LABEL[aud]}</h4></div>
       <div class="group-pick">${pick}</div>
       <div class="row" style="align-items:center;margin:10px 0 14px;gap:10px">
-        <label class="chk" style="margin:0"><input type="checkbox" id="ena-${n.id}-${aud}" ${ac.enabled?'checked':''}> 启用并发送给以上目标群</label>
+        <label class="chk" style="margin:0"><input type="checkbox" id="ena-${n.id}-${aud}"> 启用并发送给以上目标群</label>
       </div>
       <div class="section-title"><h4>发送时间</h4></div>
       <div class="row" style="align-items:flex-end;margin-bottom:14px">
         <div class="field" style="max-width:220px"><input type="datetime-local" data-k="notifyAt" value="${esc(ac.notifyAt)}"></div>
-        <label class="chk" style="margin-bottom:8px"><input type="checkbox" data-k="autoSend" ${ac.autoSend!==false?'checked':''}> 自动发送</label>
+        <label class="chk" style="margin-bottom:8px"><input type="checkbox" data-k="autoSend"> 自动发送</label>
       </div>
       ${(ac.autoSend===false && ac.notifyAt) ? `<div class="auto-paused-chip" data-auto-paused-chip style="background:#fff3e0;border:1px solid #f59e0b;border-radius:6px;padding:8px 12px;margin-bottom:14px;font-size:12px;color:#9a4f00;display:flex;align-items:center;gap:6px"><span style="font-size:14px">⚠</span><span>自动发送已暂停——确认所有信息（文案/受众群/任务）后再勾选「自动发送」</span></div>` : ''}
       <div data-template-only ${isPaste?'hidden':''}>
@@ -2156,6 +2167,11 @@
         ac.status = 'paused';
         ac.autoSend = false;       // 默认取消勾选（更安全）
         delete ac._lastTriggerSig;
+        // [v10.2 root-fix] 立即改 DOM checkbox state（不依赖 render 重建）：
+        //   Edge 浏览器对 innerHTML 重建 checkbox 时 prop/attr 偶发错位——
+        //   先直接改 prop.checked = false，render() 再用 renderAudience 末尾的 prop 同步做兜底。
+        const _as = e.target.closest('.aud-panel').querySelector('[data-k="autoSend"]');
+        if(_as) _as.checked = false;
         // 2) 异步清云端 tn_sends（旧 sendId 不会再阻塞新窗口的 claim）
         if(_sb && currentProjectId && n.id){
           const idPrefix = currentProjectId + ':' + n.id + ':' + aud + ':';
@@ -2281,6 +2297,13 @@
         });
       });
     }
+    // [v10.2 root-fix] 显式 prop 设置 checkbox 状态：
+    // innerHTML 模板里用 ${cond?'checked':''} 偶尔会被 Edge 浏览器把 prop/attr 错位，
+    // 导致 ac.autoSend=false 后 checkbox 仍显示 checked。这里用 JS 显式同步一次。
+    const _enaInput = d.querySelector('#ena-'+n.id+'-'+aud);
+    if(_enaInput) _enaInput.checked = !!ac.enabled;
+    const _autoSendInput = d.querySelector('[data-k="autoSend"]');
+    if(_autoSendInput) _autoSendInput.checked = ac.autoSend !== false;
     return d;
   }
   function bindSplitButton(wrap, callback){
