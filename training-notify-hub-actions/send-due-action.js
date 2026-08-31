@@ -124,24 +124,28 @@ async function main() {
             const at = new Date(ac.notifyAt);
             if (isNaN(at.getTime())) { reasons.badDate++; continue; }
             if (now < at) { reasons.future++; continue; }
-            if (now > addHours(at, 6)) { reasons.pastWindow++; continue; }
+            if (now > addHours(at, 24)) { reasons.pastWindow++; continue; }
             if (!(ac.targetGroups || []).length) { reasons.noGroup++; continue; }
             reasons.hit++;
 
-            // 主发送：到点后 6 小时内
+            // 主发送：到点后 24 小时内（GitHub Actions 调度可能延迟 2-8h，6h 窗口会漏发）
             const sendId = `${projectId}:${n.id}:${a}:main`;
             if (await claim(sendId)) {
               const targets = (ac.targetGroups || []).map(id => groups.find(g => g.id === id)).filter(Boolean);
               let okAll = true, errs = [];
               for (const g of targets) {
-                // 字段名以 server.js / v10.html 为准：webhookUrl（不是 webhook）
                 if (!g.webhookUrl) continue;
                 // 必须在发送前渲染：ac.content 是模板原文，含 {{项目名}}{{培训目的}}{{任务列表}} 等占位符，
                 // 不渲染就等于把 "原始模板" 发给群。渲染失败降级原文，宁可发占位符也不阻塞告警。
                 let body;
                 try { body = RC.renderContent(project, stage, n, ac) || ac.content || ''; }
                 catch (e) { body = ac.content || ''; }
-                const r = await sendWeCom(g.webhookUrl, { msgtype: 'markdown', markdown: { content: body } });
+                // [v10.3 统一真源] 用 render-core.buildTemplateCard 构建 payload——
+                // 与前端 cloudSend 字节级一致：有图走 template_card image_text（单条消息大图+文字），
+                // 无图降级 markdown。企微 markdown 不支持内嵌图，template_card 是唯一单条承载大图的方案。
+                const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
+                const payload = RC.buildTemplateCard(body, { articleUrl });
+                const r = await sendWeCom(g.webhookUrl, payload);
                 if (!r.ok) { okAll = false; errs.push(g.name + ':' + r.warn); }
               }
               if (okAll) {

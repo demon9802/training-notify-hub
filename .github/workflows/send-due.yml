@@ -2,8 +2,9 @@ name: 培训通知助手 - 云端定时发送
 
 on:
   schedule:
-    # 每 15 分钟一次；避开整点（:00）以防高负载被延迟/丢弃
-    - cron: '17,47 * * * *'
+    # 每 5 分钟一次（GitHub Actions cron 最短 5 分钟）；配合 Action 发送窗口 24h，
+    # 即使 GitHub 调度延迟 2-8h，也能在 24h 内补发。零活跃仓库 schedule 不可靠时仍尽量赶上窗口。
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}   # 允许手动触发
 
 jobs:

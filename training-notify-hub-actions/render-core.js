@@ -179,6 +179,95 @@
     return applyReplacements(stage, project || {}, ac, raw);
   }
 
+  // ---------- 统一发送 payload 构建（前端 cloudSend + Action send-due 共用） ----------
+  // 关键约束：企微 webhook 的 markdown msgtype 不支持内嵌图片（![alt](url) 会被降级成 [alt](url) 文字链接），
+  // 要在【单条消息】里承载"大图 + 文字"，只能用 msgtype:'template_card' + card_type:'image_text'。
+  // 这是企微 API 的硬限制，没有其它单条方案。
+  // 无图时降级为 markdown（纯文字足够清晰，不必套卡片）。
+  var SUPABASE_HOST_RE = /^https?:\/\/qyxxchifknfmvvyjvoue\.supabase\.co\/storage\/v1\/object\/public\//;
+
+  function extractImgs(text) {
+    var arr = [];
+    var re = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
+    var m;
+    while ((m = re.exec(text)) !== null) {
+      if (SUPABASE_HOST_RE.test(m[2])) arr.push({ alt: m[1] || '图片', url: m[2] });
+    }
+    return arr;
+  }
+
+  function stripImgs(text) {
+    return text.replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
+               .replace(/[ \t]+\n/g, '\n')
+               .replace(/\n{3,}/g, '\n\n')
+               .trim();
+  }
+
+  // 构建企微发送 payload（前端 no-cors 和 Action 服务端 fetch 都直接用）
+  // 参数: renderedContent = 已经过 renderContent 替换占位符的最终文案
+  // options: { testMode: bool, articleUrl: string }
+  // 返回: { msgtype: 'template_card'|'markdown', template_card?: {...}, markdown?: {...} }
+  function buildTemplateCard(renderedContent, options) {
+    options = options || {};
+    var testMode = !!options.testMode;
+    var articleUrl = options.articleUrl || 'https://work.weixin.qq.com/';
+
+    var raw = renderedContent || '';
+    if (testMode) raw = '【测试】' + raw;
+
+    var imgs = extractImgs(raw);
+    var cleaned = stripImgs(raw);
+
+    // 无图 → markdown（企微 markdown 不支持内嵌图，但纯文字够用）
+    if (imgs.length === 0) {
+      return { msgtype: 'markdown', markdown: { content: raw } };
+    }
+
+    // 有图 → template_card image_text（单条消息，大图+标题+描述）
+    // title = 第一行非空内容（≤64字），description = 剩余（≤512字）
+    var lines = cleaned.split(/\n+/);
+    var title = ((lines.shift() || '通知').trim() || '通知').slice(0, 64);
+    var desc = (lines.join('\n').trim() || cleaned.slice(0, 200)).slice(0, 512);
+
+    return {
+      msgtype: 'template_card',
+      template_card: {
+        card_type: 'image_text',
+        main_title: { title: title, desc: '' },
+        card_image: { url: imgs[0].url, aspect_ratio: 1.3 },
+        sub_title_text: desc,
+        card_action: { type: 1, url: articleUrl }
+      }
+    };
+  }
+
+  // 前端预览渲染：把 buildTemplateCard 的 payload 渲染成所见即所得的 HTML
+  // 视觉上对齐企微实际呈现：大图占顶 + 标题 + 描述
+  function renderTemplateCardPreview(payload) {
+    if (!payload) return '<span class="sub">（空）</span>';
+    if (payload.msgtype === 'markdown') {
+      return renderMdPreview(payload.markdown && payload.markdown.content);
+    }
+    if (payload.msgtype === 'template_card' && payload.template_card) {
+      var card = payload.template_card;
+      var html = '<div class="tpl-card">';
+      if (card.card_image && card.card_image.url) {
+        html += '<div class="tpl-card-image"><img src="' + esc(card.card_image.url) + '" alt=""></div>';
+      }
+      if (card.main_title && (card.main_title.title || card.main_title.desc)) {
+        html += '<div class="tpl-card-title">' + esc(card.main_title.title || '') +
+                (card.main_title.desc ? '<div class="tpl-card-titledesc">' + esc(card.main_title.desc) + '</div>' : '') +
+                '</div>';
+      }
+      if (card.sub_title_text) {
+        html += '<div class="tpl-card-subtitle">' + esc(card.sub_title_text).replace(/\n/g, '<br>') + '</div>';
+      }
+      html += '</div>';
+      return html;
+    }
+    return '<span class="sub">（未知格式）</span>';
+  }
+
   // ---------- 前端预览用：markdown → HTML ----------
   function esc(s) {
     return (s || '').replace(/[&<>"]/g, function (c) {
@@ -204,6 +293,10 @@
     replaceVars: replaceVars,
     renderContent: renderContent,
     renderMdPreview: renderMdPreview,
+    renderTemplateCardPreview: renderTemplateCardPreview,
+    buildTemplateCard: buildTemplateCard,
+    extractImgs: extractImgs,
+    stripImgs: stripImgs,
     esc: esc,
     linkifyUrl: linkifyUrl,
     fmtDateTime: fmtDateTime,

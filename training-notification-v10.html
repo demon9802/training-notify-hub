@@ -152,6 +152,13 @@
   .wx-msg .wx-body img{max-width:100%;border-radius:6px;margin:6px 0;display:block}
   .wx-msg .wx-body a{color:#576b95}
   .wx-msg .wx-body strong{font-weight:700}
+  /* [v10.3] template_card 预览样式（与企微实际呈现对齐：大图占顶 + 标题 + 描述） */
+  .tpl-card{background:#fff;border-radius:6px;overflow:hidden;max-width:420px;border:1px solid #e5e7eb}
+  .tpl-card-image{width:100%;background:#f3f4f6;display:block;overflow:hidden}
+  .tpl-card-image img{width:100%;height:auto;display:block;object-fit:cover;max-height:280px}
+  .tpl-card-title{padding:12px 14px 4px;font-size:15px;font-weight:700;color:#111;line-height:1.4}
+  .tpl-card-titledesc{padding:2px 14px 0;font-size:12px;color:#6b7280;line-height:1.4}
+  .tpl-card-subtitle{padding:8px 14px 14px;font-size:14px;color:#374151;line-height:1.7;white-space:pre-wrap;word-break:break-word}
   .close-x{float:right;cursor:pointer;color:var(--ink);font-size:22px;font-weight:600;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;transition:background .15s;margin:-6px -6px 0 0}
   .close-x:hover{background:var(--soft);color:var(--err)}
   #previewModal{z-index:60}
@@ -667,70 +674,22 @@
       if(!error && data) return data;
     }catch(e){ /* 降级到 no-cors 直发 */ }
 
-    // 2) 降级到 no-cors 直发：图文混排用 news msgtype，无图用 markdown
-    const SUPABASE_HOST_RE = /^https?:\/\/qyxxchifknfmvvyjvoue\.supabase\.co\/storage\/v1\/object\/public\//;
+    // 2) 降级到 no-cors 直发：浏览器无法读取响应（opaque），但请求会送达企微服务器
     async function postNoCors(webhookUrl, jsonBody){
       await fetch(webhookUrl, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify(jsonBody) });
-    }
-    // 从 markdown 中抽取 supabase 公网 URL 图片，提取顺序按出现先后
-    function extractImgs(content){
-      const arr = [];
-      const re = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
-      let m;
-      while((m = re.exec(content))!==null){
-        if(SUPABASE_HOST_RE.test(m[2])) arr.push({ alt: m[1]||'图片', url: m[2] });
-      }
-      return arr;
-    }
-    // 移除 markdown 里的图片语法（让 description 变成纯文本）。同时也清理因删除图片产生的多余空行。
-    function stripImgs(content){
-      return content.replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
-                    .replace(/[ \t]+\n/g, '\n')
-                    .replace(/\n{3,}/g, '\n\n')
-                    .trim();
-    }
-    // 拆分纯文本为 title + description：title=第一段非空内容（最多 64 字），description=剩余（最多 ~512 字）
-    function splitForNews(text){
-      const lines = text.split(/\n+/);
-      const title = (lines.shift()||'通知').trim().slice(0, 64) || '通知';
-      const description = (lines.join('\n').trim() || text.trim().slice(0, 200)).slice(0, 512);
-      return { title, description };
     }
 
     const results = [];
     for(const it of (items||[])){
       const webhook = it.webhookUrl;
-      const rawContent = (testMode?'【测试】':'') + (it.content||'');
-      // [v10.2 root-fix] news articles 的 url 是必填（点击跳转链接），缺则企微返回 40039 invalid url size
-      // 之前漏了 url 字段 → no-cors 模式下浏览器看不到 errcode → UI 误判成功 → 群里实际收不到
       const articleUrl = it.articleUrl || 'https://work.weixin.qq.com/';
       try{
-        const imgs = extractImgs(rawContent);
-        if(imgs.length === 0){
-          // 无图 → 直接发 markdown（企微 markdown 不支持内嵌图片，但纯文字足够清晰）
-          await postNoCors(webhook, { msgtype:'markdown', markdown:{ content: rawContent } });
-          results.push({ groupName: it.groupName, success:true, error:null, fallback:'no-cors' });
-        } else {
-          // 有图 → 整条文案 + 图片作为一个 news（图文）消息
-          const cleaned = stripImgs(rawContent);
-          const { title, description } = splitForNews(cleaned);
-          const articles = [];
-          // 第一篇：标题 + 描述 + 第一张图（大图）+ 跳转 url（必填）
-          articles.push({ title, description, url: articleUrl, picurl: imgs[0].url });
-          // 后续每张图：title=图片 alt（最多 64 字），description=空，url=同上，picurl=图片 URL
-          for(let i=1;i<imgs.length;i++){
-            articles.push({ title: imgs[i].alt.slice(0,64)||('图片'+(i+1)), description:'', url: articleUrl, picurl: imgs[i].url });
-          }
-          await postNoCors(webhook, { msgtype:'news', news:{ articles: articles.slice(0, 10) } });
-          results.push({
-            groupName: it.groupName,
-            success: true,
-            error: null,
-            warning: null,
-            imageResults: imgs.map(x=>({url:x.url, success:true})),
-            fallback: 'no-cors-news'
-          });
-        }
+        // [v10.3 统一真源] 调用 render-core.buildTemplateCard 构建 payload——
+        // 与 Action sendWeCom 用一模一样的函数，保证前端/云端发出去的格式字节级一致
+        // 无图降级 markdown；有图走 template_card image_text（企微单条消息承载大图+文字）
+        const payload = RenderCore.buildTemplateCard(it.content, { testMode, articleUrl });
+        await postNoCors(webhook, payload);
+        results.push({ groupName: it.groupName, success:true, error:null, fallback:'no-cors' });
       }catch(ee){
         results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee) });
       }
@@ -2702,13 +2661,18 @@
     }
     const _tgMatch = globalGroups.find(g=> ac && ac.targetGroups && ac.targetGroups.includes(g.id));
     const _tgName = (_tgMatch && _tgMatch.name) || '目标群';
+    // [v10.3] 预览对齐实际发送：用 buildTemplateCard 构建 payload 再用 renderTemplateCardPreview 渲染——
+    // 浏览器 no-cors 和 Action sendWeCom 都发这个 payload，所见即所得
+    const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
+    const payload = RenderCore.buildTemplateCard(content, { articleUrl });
     $('#previewTitle').textContent = '预览 · '+GROUPS_LABEL[aud]+'版';
-    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · '+esc(_tgName)+'</div><div class="wx-body">'+renderMdPreview(content)+'</div></div>';
+    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · '+esc(_tgName)+'</div><div class="wx-body">'+RenderCore.renderTemplateCardPreview(payload)+'</div></div>';
     $('#previewModal').classList.add('show');
   }
   function openPreviewAll(stage, n){
     $('#previewTitle').textContent = '预览 · 全部受众版本';
     let html = '';
+    const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
     AUDIENCES.forEach(a=>{
       const ac = n.audienceContent[a];
       let content;
@@ -2719,7 +2683,8 @@
         console.warn('[openPreviewAll] replaceVars 失败 ('+a+'):', e);
       }
       const status = ac.enabled ? '' : '<span class="sub">（未启用）</span>';
-      html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body">${renderMdPreview(content)}</div></div>`;
+      const payload = RenderCore.buildTemplateCard(content, { articleUrl });
+      html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body">${RenderCore.renderTemplateCardPreview(payload)}</div></div>`;
     });
     $('#previewBody').innerHTML = html || '<span class="sub">（无）</span>';
     $('#previewModal').classList.add('show');
