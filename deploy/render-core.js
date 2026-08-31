@@ -180,10 +180,13 @@
   }
 
   // ---------- 统一发送 payload 构建（前端 cloudSend + Action send-due 共用） ----------
-  // 关键约束：企微 webhook 的 markdown msgtype 不支持内嵌图片（![alt](url) 会被降级成 [alt](url) 文字链接），
-  // 要在【单条消息】里承载"大图 + 文字"，只能用 msgtype:'template_card' + card_type:'image_text'。
-  // 这是企微 API 的硬限制，没有其它单条方案。
-  // 无图时降级为 markdown（纯文字足够清晰，不必套卡片）。
+  // 关键约束（v10.4 恢复图文混排）：
+  //   企微 webhook 的 markdown msgtype **不支持**内嵌图片（`![alt](url)` 会被降级为 `[alt](url)` 文字链接）。
+  //   要实现"图片按文中位置嵌在文字中间"的【图文混排】效果，唯一可行方案是【多条消息顺序发送】：
+  //     - 文本段落：msgtype='markdown'，content = 该段纯文本
+  //     - 图片段落：msgtype='image'，image = { base64, md5 }  (需先下载图、转 base64、算 MD5)
+  //   企微会按发送顺序把同一 bot 的连续消息聚合显示在群里，对外呈现"图文混排"。
+  //   template_card（单条大图+标题+描述卡片）不是图文混排，是卡片式排版，与用户既定方案不一致。
   var SUPABASE_HOST_RE = /^https?:\/\/qyxxchifknfmvvyjvoue\.supabase\.co\/storage\/v1\/object\/public\//;
 
   function extractImgs(text) {
@@ -196,17 +199,134 @@
     return arr;
   }
 
+  // 把渲染后的内容切分成「按出现顺序」的 text / image 段，是 buildSegmentedMessages / renderSegmentedPreview 共用的真源
+  // 返回: [{ type:'text'|'image', text?, alt?, url? }]
+  function splitIntoSegments(content) {
+    var segs = [];
+    if (!content) return segs;
+    var re = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
+    var lastIdx = 0;
+    var m;
+    while ((m = re.exec(content)) !== null) {
+      if (m.index > lastIdx) {
+        segs.push({ type: 'text', text: content.slice(lastIdx, m.index) });
+      }
+      segs.push({ type: 'image', alt: m[1] || '图片', url: m[2] });
+      lastIdx = m.index + m[0].length;
+    }
+    if (lastIdx < content.length) {
+      segs.push({ type: 'text', text: content.slice(lastIdx) });
+    }
+    return segs;
+  }
+
+  // 同步：Uint8Array -> base64 / MD5（Node 与浏览器双环境）
+  function uint8ToBase64(buf) {
+    if (typeof Buffer !== 'undefined' && Buffer.from) {
+      return Buffer.from(buf).toString('base64');
+    }
+    var bin = '';
+    for (var i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
+    return btoa(bin);
+  }
+  function uint8ToMd5Hex(buf) {
+    // Node（Action）：用 crypto
+    if (typeof require === 'function') {
+      try {
+        var crypto = require('crypto');
+        if (crypto && crypto.createHash) {
+          return crypto.createHash('md5').update(Buffer.from(buf)).digest('hex');
+        }
+      } catch (e) { /* fall through to browser */ }
+    }
+    // 浏览器：复用 md5-lite.min.js 暴露的 md5 全局（<script src="md5-lite.min.js">）
+    if (typeof md5 === 'function') {
+      return md5(Array.prototype.slice.call(buf));
+    }
+    throw new Error('MD5 not available: 浏览器需先加载 md5-lite.min.js；Node 需可访问 crypto');
+  }
+
+  // 构建企微发送的"多消息数组"（图文混排真源）
+  // 参数: renderedContent = 已替换占位符的最终文案
+  // options: {
+  //   testMode: bool,           // 测试模式：在首段前加【测试】
+  //   fetchImpl: Function,      // 可选：自定义 fetch（Node 18+ 全局 fetch 可用；测试可注入 mock）
+  //   downloadImages: bool,     // 是否下载图片转 base64+md5（默认 true；设为 false 时图片段会被跳过，节省带宽）
+  // }
+  // 返回: Promise<Array<WeComMessage>> —— 每条 msgtype ∈ {markdown, image}
+  // 抛出网络错误时，整段降级为：图片段用 __skip_image__ 标记（不抛错，调用方可决定如何处理）
+  async function buildSegmentedMessages(renderedContent, options) {
+    options = options || {};
+    var testMode = !!options.testMode;
+    var downloadImages = options.downloadImages !== false;
+    var fetchImpl = options.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+
+    var raw = renderedContent || '';
+    if (testMode) raw = '【测试】' + raw;
+    var segs = splitIntoSegments(raw);
+
+    var out = [];
+    for (var i = 0; i < segs.length; i++) {
+      var seg = segs[i];
+      if (seg.type === 'text') {
+        var t = (seg.text || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+        if (t) out.push({ msgtype: 'markdown', markdown: { content: t } });
+      } else if (seg.type === 'image') {
+        if (!downloadImages) {
+          out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: 'downloadImages=false' });
+          continue;
+        }
+        if (!fetchImpl) {
+          out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: 'no fetchImpl' });
+          continue;
+        }
+        try {
+          var resp = await fetchImpl(seg.url);
+          if (!resp.ok) {
+            out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: 'HTTP ' + resp.status });
+            continue;
+          }
+          var buf = new Uint8Array(await resp.arrayBuffer());
+          out.push({
+            msgtype: 'image',
+            image: { base64: uint8ToBase64(buf), md5: uint8ToMd5Hex(buf) },
+            meta: { alt: seg.alt, url: seg.url, bytes: buf.length }
+          });
+        } catch (e) {
+          out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: (e && e.message) || String(e) });
+        }
+      }
+    }
+    return out;
+  }
+
+  // 前端预览渲染：把分段数组渲染成所见即所得的 HTML
+  // 视觉上对齐企微实际呈现：每段独立气泡（text 用 markdown 渲染，image 用 <img> 标签）
+  function renderSegmentedPreview(segments) {
+    if (!segments || segments.length === 0) return '<span class="sub">（空）</span>';
+    var html = '';
+    for (var i = 0; i < segments.length; i++) {
+      var seg = segments[i];
+      if (seg.type === 'text') {
+        var t = (seg.text || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+        if (t) html += '<div class="seg-msg seg-text">' + renderMdPreview(t) + '</div>';
+      } else if (seg.type === 'image') {
+        html += '<div class="seg-msg seg-image"><img src="' + esc(seg.url) + '" alt="' + esc(seg.alt || '图片') + '"></div>';
+      }
+    }
+    return html || '<span class="sub">（空）</span>';
+  }
+
+  // v10.3 临时方案：buildTemplateCard + renderTemplateCardPreview 保留为 legacy 导出，
+  // 防止外部代码误用；新代码请用 buildSegmentedMessages + renderSegmentedPreview。
+
+  // 把 markdown 里的图片语法移除并规整空白（template_card legacy 路径用）
   function stripImgs(text) {
     return text.replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
                .replace(/[ \t]+\n/g, '\n')
                .replace(/\n{3,}/g, '\n\n')
                .trim();
   }
-
-  // 构建企微发送 payload（前端 no-cors 和 Action 服务端 fetch 都直接用）
-  // 参数: renderedContent = 已经过 renderContent 替换占位符的最终文案
-  // options: { testMode: bool, articleUrl: string }
-  // 返回: { msgtype: 'template_card'|'markdown', template_card?: {...}, markdown?: {...} }
   function buildTemplateCard(renderedContent, options) {
     options = options || {};
     var testMode = !!options.testMode;
@@ -218,13 +338,10 @@
     var imgs = extractImgs(raw);
     var cleaned = stripImgs(raw);
 
-    // 无图 → markdown（企微 markdown 不支持内嵌图，但纯文字够用）
     if (imgs.length === 0) {
       return { msgtype: 'markdown', markdown: { content: raw } };
     }
 
-    // 有图 → template_card image_text（单条消息，大图+标题+描述）
-    // title = 第一行非空内容（≤64字），description = 剩余（≤512字）
     var lines = cleaned.split(/\n+/);
     var title = ((lines.shift() || '通知').trim() || '通知').slice(0, 64);
     var desc = (lines.join('\n').trim() || cleaned.slice(0, 200)).slice(0, 512);
@@ -241,8 +358,6 @@
     };
   }
 
-  // 前端预览渲染：把 buildTemplateCard 的 payload 渲染成所见即所得的 HTML
-  // 视觉上对齐企微实际呈现：大图占顶 + 标题 + 描述
   function renderTemplateCardPreview(payload) {
     if (!payload) return '<span class="sub">（空）</span>';
     if (payload.msgtype === 'markdown') {
@@ -293,6 +408,11 @@
     replaceVars: replaceVars,
     renderContent: renderContent,
     renderMdPreview: renderMdPreview,
+    // v10.4 图文混排（新真源，前端 + Action 共用）
+    splitIntoSegments: splitIntoSegments,
+    buildSegmentedMessages: buildSegmentedMessages,
+    renderSegmentedPreview: renderSegmentedPreview,
+    // v10.3 临时方案（legacy，保留避免外部代码误用）
     renderTemplateCardPreview: renderTemplateCardPreview,
     buildTemplateCard: buildTemplateCard,
     extractImgs: extractImgs,

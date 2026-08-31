@@ -159,6 +159,13 @@
   .tpl-card-title{padding:12px 14px 4px;font-size:15px;font-weight:700;color:#111;line-height:1.4}
   .tpl-card-titledesc{padding:2px 14px 0;font-size:12px;color:#6b7280;line-height:1.4}
   .tpl-card-subtitle{padding:8px 14px 14px;font-size:14px;color:#374151;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+  /* [v10.4 图文混排] 预览对齐企微按发送顺序聚合的多消息气泡：每段独立气泡 */
+  .wx-body.wx-seg{display:flex;flex-direction:column;gap:8px}
+  .seg-msg{background:#fff;border-radius:8px;padding:10px 12px;max-width:420px;font-size:14px;line-height:1.7;color:#1f2329;box-shadow:0 1px 2px rgba(0,0,0,.04);word-break:break-word}
+  .seg-text{white-space:pre-wrap}
+  .seg-text img{max-width:100%;border-radius:4px;margin:4px 0}
+  .seg-image{background:transparent;padding:0;box-shadow:none;text-align:center}
+  .seg-image img{max-width:100%;max-height:280px;border-radius:6px;display:block;margin:0 auto}
   .close-x{float:right;cursor:pointer;color:var(--ink);font-size:22px;font-weight:600;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;transition:background .15s;margin:-6px -6px 0 0}
   .close-x:hover{background:var(--soft);color:var(--err)}
   #previewModal{z-index:60}
@@ -661,16 +668,13 @@
       return { success:true, url:pub.publicUrl, mime };
     }catch(e){ return {success:false, error:e.message}; }
   }
-// 手动发送：调用 Supabase Edge Function（云端转发企微 webhook，规避浏览器 CORS / 密钥暴露）。
-  // Edge Function 未部署时降级：用 fetch mode='no-cors' 直接发给企微 webhook——
-  // 浏览器无法读取响应（opaque），但请求**会送达**企微服务器，规避 CORS 阻断。
-  // [v10.2] 图片消息：改为企微 news（图文）msgtype —— 一个 article = title+description+picurl，
-  //       让图片和文案在同一条消息里整体呈现（替代之前 markdown 主体 + 单独 image 分段两段发送）
-  // [v10.3 修复] cloudSend 不再因 _sb 为 null 而直接返回——EdgeOne 页面如果没配 anon key，
-  // _sb 是 null，但"立即发送"仍要能工作（no-cors 直发不依赖云端）。
-  // 只有"走 Edge Function 拿真回执"才需要 _sb，那条路径用 if(_sb) 保护。
+  // [v10.4 恢复图文混排] 发送路径：
+  //   1) 优先走 Edge Function（send-v10，部署在 Supabase）—— 服务端下载图、转 base64、算 MD5，
+  //      按文中位置顺序发多条消息（markdown + image + markdown + image...），企微群按发送顺序聚合显示"图文混排"。
+  //   2) 降级 no-cors 直发：浏览器 fetch 拉图（仅在 Supabase Storage CORS 允许时能成功），同样分段发。
+  //      若图片下载失败（CORS / 404），降级为只发文本并标记哪些图被跳过。
+  //   3) 关键：已废弃 v10.3 的 template_card 卡片式排版（用户已确认与既定方案不一致）。
   async function cloudSend(items, testMode){
-    // 1) 优先走 Edge Function（拿到真实送达回执 + 图片分段）—— 仅在 _sb 可用时尝试
     if(_sb){
       try{
         const { data, error } = await _sb.functions.invoke('send-v10', { body:{ items, testMode } });
@@ -678,7 +682,7 @@
       }catch(e){ /* 降级到 no-cors 直发 */ }
     }
 
-    // 2) 降级到 no-cors 直发：浏览器无法读取响应（opaque），但请求会送达企微服务器
+    // 降级到 no-cors 直发：不依赖 _sb，浏览器无法读取响应（opaque），但请求会送达企微服务器
     async function postNoCors(webhookUrl, jsonBody){
       await fetch(webhookUrl, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify(jsonBody) });
     }
@@ -686,14 +690,28 @@
     const results = [];
     for(const it of (items||[])){
       const webhook = it.webhookUrl;
-      const articleUrl = it.articleUrl || 'https://work.weixin.qq.com/';
+      if(!webhook){ results.push({ groupName: it.groupName, success:false, error:'缺少 webhook' }); continue; }
       try{
-        // [v10.3 统一真源] 调用 render-core.buildTemplateCard 构建 payload——
-        // 与 Action sendWeCom 用一模一样的函数，保证前端/云端发出去的格式字节级一致
-        // 无图降级 markdown；有图走 template_card image_text（企微单条消息承载大图+文字）
-        const payload = RenderCore.buildTemplateCard(it.content, { testMode, articleUrl });
-        await postNoCors(webhook, payload);
-        results.push({ groupName: it.groupName, success:true, error:null, fallback:'no-cors' });
+        // [v10.4 图文混排] 调用 render-core.buildSegmentedMessages 构建消息数组——
+        // 浏览器 no-cors 路径和 Action sendWeCom 服务端路径共用同一函数，保证前端/云端发送格式字节级一致
+        const msgs = await RenderCore.buildSegmentedMessages(it.content, { testMode });
+        const skipped = [];
+        for(const m of msgs){
+          if(m.msgtype === '__skip_image__'){
+            skipped.push(m.alt + (m.reason ? '（' + m.reason + '）' : ''));
+            continue;
+          }
+          await postNoCors(webhook, m);
+        }
+        const success = skipped.length === 0;
+        results.push({
+          groupName: it.groupName,
+          success,
+          error: skipped.length ? ('已跳过 '+skipped.length+' 张图片：'+skipped.join('、')) : null,
+          sent: msgs.length - skipped.length,
+          skipped: skipped.length,
+          fallback:'no-cors'
+        });
       }catch(ee){
         results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee) });
       }
@@ -2665,18 +2683,16 @@
     }
     const _tgMatch = globalGroups.find(g=> ac && ac.targetGroups && ac.targetGroups.includes(g.id));
     const _tgName = (_tgMatch && _tgMatch.name) || '目标群';
-    // [v10.3] 预览对齐实际发送：用 buildTemplateCard 构建 payload 再用 renderTemplateCardPreview 渲染——
-    // 浏览器 no-cors 和 Action sendWeCom 都发这个 payload，所见即所得
-    const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
-    const payload = RenderCore.buildTemplateCard(content, { articleUrl });
+    // [v10.4 图文混排] 预览 = 实际发送：调用 render-core.splitIntoSegments 分段，
+    // 再用 renderSegmentedPreview 渲染——与 Edge Function / Action 真实发送路径共用同一分段真源
+    const segments = RenderCore.splitIntoSegments(content);
     $('#previewTitle').textContent = '预览 · '+GROUPS_LABEL[aud]+'版';
-    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · '+esc(_tgName)+'</div><div class="wx-body">'+RenderCore.renderTemplateCardPreview(payload)+'</div></div>';
+    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · '+esc(_tgName)+'</div><div class="wx-body wx-seg">'+RenderCore.renderSegmentedPreview(segments)+'</div></div>';
     $('#previewModal').classList.add('show');
   }
   function openPreviewAll(stage, n){
     $('#previewTitle').textContent = '预览 · 全部受众版本';
     let html = '';
-    const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
     AUDIENCES.forEach(a=>{
       const ac = n.audienceContent[a];
       let content;
@@ -2687,8 +2703,8 @@
         console.warn('[openPreviewAll] replaceVars 失败 ('+a+'):', e);
       }
       const status = ac.enabled ? '' : '<span class="sub">（未启用）</span>';
-      const payload = RenderCore.buildTemplateCard(content, { articleUrl });
-      html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body">${RenderCore.renderTemplateCardPreview(payload)}</div></div>`;
+      const segments = RenderCore.splitIntoSegments(content);
+      html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body wx-seg">${RenderCore.renderSegmentedPreview(segments)}</div></div>`;
     });
     $('#previewBody').innerHTML = html || '<span class="sub">（无）</span>';
     $('#previewModal').classList.add('show');
