@@ -569,15 +569,19 @@
       s.notifications.forEach((n, ni)=>{
         const cn = (cs.notifications||[]).find(x=>x && x.id && n && n.id && x.id===n.id);
         if(!cn) return;
-        // "云端真源优先" 字段白名单：sentAt / sentAudiences / reminder1dSentAt / reminder2hSentAt / status（仅 sent 状态）
-        if(cn.sentAt) n.sentAt = cn.sentAt;
-        if(Array.isArray(cn.sentAudiences) && cn.sentAudiences.length){
-          n.sentAudiences = Array.from(new Set([].concat(n.sentAudiences||[], cn.sentAudiences)));
+        // [v10.2 root-fix] 关键："云端真源优先"的正确语义是「本地缺失/被显式清空时」才用云端补，
+        // 不是「云端有就覆盖本地」——否则 notifyAt change handler 刚把 n.sentAt=null 清空，
+        // 下一秒 silentSave → fetchCloudMerge 又把云端旧 sentAt 写回，导致改时间失效、临近节点不进。
+        // 仅当本地字段为 falsy(null/undefined/空数组) 时才用云端值补：
+        //   附加：n.status==='paused' 表示用户主动重置发送（notifyAt change 路径），云端旧 sentAt 必须不复活
+        if(cn.sentAt && !n.sentAt && n.status !== 'paused') n.sentAt = cn.sentAt;
+        if(Array.isArray(cn.sentAudiences) && cn.sentAudiences.length && (!Array.isArray(n.sentAudiences) || n.sentAudiences.length===0) && n.status !== 'paused'){
+          n.sentAudiences = Array.from(new Set(cn.sentAudiences));
         }
-        if(cn.reminder1dSentAt) n.reminder1dSentAt = cn.reminder1dSentAt;
-        if(cn.reminder2hSentAt) n.reminder2hSentAt = cn.reminder2hSentAt;
-        // status 只在云端是 sent 时覆盖本地 draft（避免本地手动重置被吞）
-        if(cn.status === 'sent' && n.status !== 'sent'){
+        if(cn.reminder1dSentAt && !n.reminder1dSentAt && n.status !== 'paused') n.reminder1dSentAt = cn.reminder1dSentAt;
+        if(cn.reminder2hSentAt && !n.reminder2hSentAt && n.status !== 'paused') n.reminder2hSentAt = cn.reminder2hSentAt;
+        // status: 只在本地是"未明确"的非 sent 状态、且云端是 sent 时才覆盖
+        if(cn.status === 'sent' && n.status !== 'sent' && n.status !== 'paused'){
           n.status = 'sent';
         }
       });
@@ -2150,7 +2154,7 @@
         </span>
       </div>`;
 
-    d.querySelector('[data-k="notifyAt"]').addEventListener('change',e=>{
+    d.querySelector('[data-k="notifyAt"]').addEventListener('change', async e => {
       const oldAt = ac.notifyAt;
       const newAt = e.target.value;
       ac.notifyAt = newAt;
@@ -2162,6 +2166,7 @@
         // 1) 清前端内存 + 云端 tn_sends，避免 reconcile 把旧"已发"状态回灌
         if(Array.isArray(n.sentAudiences)) n.sentAudiences = n.sentAudiences.filter(x => x !== aud);
         n.sentAt = null;          // 推送概览"实际发送"列同步清空
+        n.status = 'paused';       // 节点顶层 status 同步置 paused（mergeCloudAuthorityFields 看到本地非 sent/paused 时才会用云端 sent 覆盖）
         ac.sendAttempts = 0;       // 失败计数归零
         ac.lastError = '';
         ac.status = 'paused';
@@ -2172,17 +2177,47 @@
         //   先直接改 prop.checked = false，render() 再用 renderAudience 末尾的 prop 同步做兜底。
         const _as = e.target.closest('.aud-panel').querySelector('[data-k="autoSend"]');
         if(_as) _as.checked = false;
-        // 2) 异步清云端 tn_sends（旧 sendId 不会再阻塞新窗口的 claim）
+        // 2) 立即同步内存 projects[]（buildOverviewRows 优先从这里取）
+        if(projects){
+          const _idx = projects.findIndex(p=>p.id===currentProjectId);
+          if(_idx>=0) projects[_idx] = JSON.parse(JSON.stringify(project));
+        }
+        // 3) 立即 render（不等 silentSave）
+        render();
+        // 4) [v10.2 root-fix] 异步清云端 tn_sends（旧 sendId 不会再阻塞新窗口的 claim）——
+        //   必须【await】+ 错误处理：fire-and-forget 时 silentSave 抢先写云端项目，
+        //   mergeCloudAuthorityFields 又把云端 sentAt 写回，改时间失效。
         if(_sb && currentProjectId && n.id){
           const idPrefix = currentProjectId + ':' + n.id + ':' + aud + ':';
-          _sb.from('tn_sends').delete().like('id', idPrefix + '%').then(({error})=>{
-            if(error) console.warn('[notifyAt-change] tn_sends clean failed:', error.message);
-          });
+          try{
+            const { error: delErr } = await _sb.from('tn_sends').delete().like('id', idPrefix + '%');
+            if(delErr) console.warn('[notifyAt-change] tn_sends clean failed:', delErr.message);
+          }catch(e){ console.warn('[notifyAt-change] tn_sends clean exception:', e.message); }
         }
-        scheduleAutoSave();
-        render();
-        // 单行 warn 提示，不换行
+        // 5) [v10.2 root-fix] 写云端项目：【不走 fetchCloudMerge】，直接 cloudSet 覆盖——
+        //   关键！如果走 fetchCloudMerge，云端旧 sentAt 会被 mergeCloudAuthorityFields 写回本地。
+        //   改时间场景的语义是「用户主动重置发送状态」，云端旧 sentAt 必须被覆盖。
+        if(_sb && currentProjectId){
+          try{
+            await cloudSet('project:'+currentProjectId, project);
+            const tip = $('#saveTip');
+            if(tip) tip.textContent = '已自动保存 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+          }catch(e){
+            toast('保存失败：'+e.message, {tone:'warn'});
+          }
+        } else {
+          // localStorage 模式：仍然异步保存即可
+          scheduleAutoSave();
+        }
+        // 6) 单行 warn 提示，不换行
         toast('已修改发送时间，自动发送已暂停；确认信息无误后请勾选「自动发送」', {tone:'warn'});
+        // 7) 立即触发一次 overview 刷新 + 客户端 send-due 兜底（不等 12s 轮询）
+        queueMicrotask(()=>{
+          try{
+            if(typeof pollOverview==='function') pollOverview();
+            if(typeof clientSendDue==='function') clientSendDue({force:true});
+          }catch(e){}
+        });
         return;
       }
       scheduleAutoSave();
