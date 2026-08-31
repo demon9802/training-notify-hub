@@ -140,23 +140,12 @@ async function main() {
                 let body;
                 try { body = RC.renderContent(project, stage, n, ac) || ac.content || ''; }
                 catch (e) { body = ac.content || ''; }
-                // [v10.4 图文混排] 用 render-core.buildSegmentedMessages 构建多消息数组——
-                // 与前端 cloudSend 字节级一致：文本段发 markdown、图片段下载→base64+md5→发 image 消息，
-                // 企微按顺序接收自动聚合显示"图文混排"效果。已确认 v10.3 的 template_card 卡片式排版与既定方案不符。
-                const msgs = await RC.buildSegmentedMessages(body);
-                let groupOk = true, groupErr = null, skippedImgs = [];
-                for (const m of msgs) {
-                  if (m.msgtype === '__skip_image__') {
-                    skippedImgs.push(m.alt + (m.reason ? '（' + m.reason + '）' : ''));
-                    continue;
-                  }
-                  const r = await sendWeCom(g.webhookUrl, m);
-                  if (!r.ok) { groupOk = false; groupErr = r.warn; }
-                }
-                const r = { ok: groupOk, warn: groupErr || (skippedImgs.length ? '已跳过 ' + skippedImgs.length + ' 张图片' : '') };
-                if (skippedImgs.length > 0) {
-                  console.warn('[send] ' + projectId + '/' + n.id + '/' + a + ' 部分图片跳过：' + skippedImgs.join('、'));
-                }
+                // [v10.5 图文混排真源] 用 render-core.buildNewsPayload 构建 news 单 article payload——
+                // 与前端 cloudSend（no-cors 降级 / Edge Function）/ Edge Function send-v10 字节级一致。
+                // 无图降级 markdown_v2；有图走 news（picurl 是 URL，企微服务端自己抓，无需下载）。
+                const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
+                const payload = RC.buildNewsPayload(body, { articleUrl });
+                const r = await sendWeCom(g.webhookUrl, payload);
                 if (!r.ok) { okAll = false; errs.push(g.name + ':' + r.warn); }
               }
               if (okAll) {

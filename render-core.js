@@ -1,193 +1,195 @@
-/**
- * 培训通知助手 — 渲染核心（单一数据源）
- *
- * 这是 v10.html::replaceVars / training-notification-server.js::renderContent /
- * send-due-action.js::renderContent 三处逻辑的【唯一真源】。
- *
- * 之前三处各写一份，极易在改一处时另一处"悄悄变回去"或格式分叉，导致：
- *   - 推送概览/预览显示 {{项目名}} 而非真实值
- *   - 前端预览与企微实际发送文案不一致
- * 现在统一抽到此处，三处都 require / 加载本模块，从此改一处即全局生效。
- *
- * 用法：
- *   Node  : const RC = require('./render-core');  RC.renderContent(...)
- *   浏览器: <script src="/render-core.js"></script>  ->  window.RenderCore.replaceVars(...)
- *
- * 关键约定（三处必须一致，已在此固化）：
- *   - NBSP2 = 2 个 U+00A0，做任务缩进；禁用 NBSP3/4 与普通空格。
- *   - 读取项目字段一律 `(_p && _p.xxx) || 兜底`，避免跨项目预览时 _p 为 undefined 抛错。
- *   - 支持 5 种占位符写法：{{key}} 「key」 【key】 （key） (key)。
- *   - paste 模式（inputMode==='paste'）原样返回，不做任何替换。
- */
+// render-core.js — 培训通知助手·渲染/构建真源（Node + 浏览器共用）
+//
+// 单一真源原则：所有发送路径必须共用同一套构建逻辑：
+//   1) 前端 cloudSend（Edge Function 调用 / no-cors 降级）
+//   2) Edge Function send-v10（云端转发企微）
+//   3) GitHub Action send-due（定时调度）
+// 三处 payload 必须字节级一致 → 群里实际收到的 = 预览看到的。
+//
+// 关键约束（企微 API 硬限制）：
+//   - markdown / markdown_v2 都不支持内嵌图片（![alt](url) 会被降级成文字链接）
+//   - 要实现"一条通知·图文混排"（大图占顶 + 多行文字描述）→ 必须 msgtype='news'
+//     单 article = title (≤64) + description (≤512, 含 \n/列表/链接) + picurl (1 张) + url (跳转)
+//   - picurl 是 URL，企微服务器直接抓——前端/Edge Function 不需要下载转 base64
+//   - v10.3 / v10.4 试过的 template_card（卡片式）/ 分段发送（多消息聚合）均与既定方案不符，
+//     已废弃。v10.5 统一回归 news 单 article。
+
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
     module.exports = factory();
   } else {
     root.RenderCore = factory();
   }
-})(typeof self !== 'undefined' ? self : this, function () {
-  'use strict';
+})(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this), function () {
 
-  var NBSP2 = '  '; // 2 × U+00A0 (NBSP). 紧贴任务名文本，0.5 em/字符 × 2 = 1 em 缩进 = 与编号后首字对齐
+  // ---------- 基础常量 ----------
+  // NBSP2：2×U+00A0，是目前唯一能对齐编号后文字+说明的方案（U+3000/U+2003 过宽）
+  var NBSP2 = '  ';
+
+  // 仅匹配 Supabase Storage 公网 URL（避免误把别的图当成本系统图）
+  var SUPABASE_HOST_RE = /^https?:\/\/qyxxchifknfmvvyjvoue\.supabase\.co\/storage\/v1\/object\/public\//;
+
+  // ---------- 工具函数 ----------
+  function esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
 
   function linkifyUrl(s) {
+    if (!s) return s;
+    var re = /(https?:\/\/[^\s<>"]+)/g;
+    return String(s).replace(re, function (u) { return '[' + u + '](' + u + ')'; });
+  }
+
+  function fmtDateTime(s) {
     if (!s) return '';
-    return String(s).replace(/(https?:\/\/[^\s]+)/g, '[$1]($1)');
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    var p = function (n) { return n < 10 ? '0' + n : '' + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+      ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
   }
 
-  function fmtDateTime(dateStr, timeStr) {
-    var s = dateStr || '';
-    if (timeStr) s += (s ? ' ' : '') + timeStr;
-    return s || '';
+  function fmtStageTime(stage, project) {
+    // 项目级"开始/结束"时间渲染；缺失字段返回空串（不显示）
+    if (!stage) return '';
+    var start = stage.startDate || (project && project.startDate) || '';
+    var end = stage.endDate || (project && project.endDate) || '';
+    if (start && end) return fmtDateTime(start) + ' ~ ' + fmtDateTime(end);
+    return fmtDateTime(start || end);
   }
 
-  function fmtStageTime(s) {
-    var start = fmtDateTime(s.startDate, s.startTime);
-    var end = fmtDateTime(s.endDate, s.endTime);
-    if (!start && !end) return '（未设定）';
-    if (!end) return start;
-    if (!start) return end;
-    return start + ' ~ ' + end;
-  }
-
-  // 任务列表算法（三处完全一致）：
-  //   - 勾选 = 显式选定的任务；取消勾选（全空）= 通知中不包含学习任务，渲染为 (无)
-  //   - 2026-08-27 之前误改为"空 = 全量代入"（怕出现 (无)），与用户预期相反；现回正
-  //   - taskOrder 仅排序，且仅在命中 baseTasks 时使用；taskOrder 缺失 / 全是无效 ID（脏数据）→ 用 baseTasks 天然顺序
-  function resolveTasks(stage, ac) {
-    var stageTasks = stage.tasks || [];
-    var taskIdsArr = Array.isArray(ac.taskIds) ? ac.taskIds : [];
-    if (taskIdsArr.length === 0) return [];   // 不勾 → 通知中不带学习任务，渲染时显示 (无)
-    var baseTasks = stageTasks.filter(function (t) { return taskIdsArr.indexOf(t.id) !== -1; });
-    var order = Array.isArray(ac.taskOrder) ? ac.taskOrder : [];
-    var orderHits = order.filter(function (id) { return baseTasks.some(function (t) { return t.id === id; }); });
-    var tasks;
-    if (orderHits.length > 0) {
-      tasks = order.map(function (id) { return baseTasks.find(function (t) { return t.id === id; }); }).filter(Boolean);
-    } else {
-      tasks = baseTasks;
+  // ---------- 变量替换（占位符渲染） ----------
+  // 占位符 5 种格式都支持：{{key}} / 「key」 / 【key】 / （key）全角 / (key)半角
+  // _p.xxx 链式访问 → 必须 `(_p && _p.xxx) || '兜底'` 短路防 undefined 报错
+  function safeGet(obj, path, fallback) {
+    if (!obj) return fallback;
+    var cur = obj;
+    var parts = String(path).split('.');
+    for (var i = 0; i < parts.length; i++) {
+      if (cur == null) return fallback;
+      cur = cur[parts[i]];
     }
-    return tasks;
+    return cur == null ? fallback : cur;
   }
 
-  function formatAtt(a, indent) {
-    if (!a || !a.url) return '';
-    var name = a.name || (a.type === 'image' ? '图片' : '链接');
-    if (a.type === 'image') return indent + name + '\n' + indent + '![' + name + '](' + a.url + ')';
-    var linkText = a.linkText || a.url;
-    return indent + name + '[' + linkText + '](' + a.url + ')';
-  }
+  function replaceVars(stage, n, aud, content) {
+    if (!content) return '';
+    // [v10.5] 不再硬编码 state.project——浏览器 / Node 双环境都能用
+    // 浏览器从全局 state 取；Node 端（如 GitHub Action）从传入的 n 上下文推断（n._project 由调用方注入）
+    var project = (typeof state !== 'undefined' && state.project) ||
+                  (typeof window !== 'undefined' && window.state && window.state.project) ||
+                  (n && n._project) ||
+                  (stage && stage._project) ||
+                  null;
+    var ac = ((n.audienceContent || {})[aud]) || {};
+    var audienceLabel = { student: '学员', lecturer: '讲师', manager: '管理' }[aud] || aud;
 
-  function buildTaskLines(stage, ac) {
-    var tasks = resolveTasks(stage, ac);
-    var taskLines = tasks.map(function (t, i) {
-      var line = (i + 1) + '. ' + (t.name || '未命名任务') + (t.dueDate ? '（截止 ' + t.dueDate + '）' : '');
-      if (t.description) {
-        var desc = String(t.description).replace(/\r\n?/g, '\n');
-        line += '\n' + NBSP2 + desc.split('\n').join('\n' + NBSP2);
-      }
-      var attLines = (t.attachments || []).map(function (a) { return formatAtt(a, NBSP2); }).filter(Boolean).join('\n');
-      if (attLines) line += '\n' + attLines;
-      return line;
-    }).join('\n') || '（无）';
-    var attLines = tasks.map(function (t) {
-      return (t.attachments || []).map(function (a) {
-        if (!a.url) return '';
-        var name = a.name || (a.type === 'image' ? '图片' : '链接');
-        if (a.type === 'image') return '- ' + name + '\n  ![' + name + '](' + a.url + ')';
-        return '- ' + name + '[' + (a.linkText || name) + '](' + a.url + ')';
-      }).filter(Boolean).join('\n');
-    }).filter(Boolean).join('\n') || '（无）';
-    return { taskLines: taskLines, attLines: attLines };
-  }
-
-  function buildReplacers(stage, _p, ac) {
-    var both = buildTaskLines(stage, ac);
-    var taskLines = both.taskLines;
-    var attLines = both.attLines;
-    var dt = ac.notifyAt
-      ? new Date(ac.notifyAt).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-      : '（未设定）';
-    // stageList 必须用 _p（项目级），跨项目预览时取传入项目的阶段，而非编辑中项目
-    var stageList = ((_p && _p.stages) || []).map(function (s, i) {
-      return (i + 1) + '. ' + (s.name || '阶段 ' + (i + 1)) +
-        (s.startDate || s.endDate ? '（' + (s.startDate || '') + (s.endDate ? ' ~ ' + s.endDate : '') + '）' : '');
-    }).join('\n');
-    var placeOrLink = stage.placeOrLink || '';
-    var placeOrLinkLinked = linkifyUrl(placeOrLink);
-    return {
-      '项目名': (_p && _p.projectName) || '（未命名项目）',
-      '负责人': (_p && _p.owner) || '',
-      '培训目的': (_p && _p.purpose) || '',
-      '项目描述': (_p && _p.description) || '',
-      '整体安排': (_p && _p.overallArrangement) || '',
-      '项目开始': (_p && _p.startDate) || '',
-      '项目结束': (_p && _p.endDate) || '',
-      '阶段名': stage.name || '',
-      '阶段开始日': stage.startDate || '',
-      '阶段结束日': stage.endDate || '',
-      '阶段开始时间': fmtDateTime(stage.startDate, stage.startTime) || '（未设定）',
-      '阶段结束时间': fmtDateTime(stage.endDate, stage.endTime) || '（未设定）',
-      '阶段时间': fmtStageTime(stage),
-      '预期时间': fmtStageTime(stage),
-      '培训类型': stage.trainingType === 'online' ? '线上' : stage.trainingType === 'offline' ? '线下' : '',
-      '线上链接': stage.meetingLink || '',
-      '线下场地': stage.venue || '',
-      '地点/链接': placeOrLinkLinked,
-      '任务列表': taskLines,
-      '附件列表': attLines,
-      '发送时间': dt,
-      '阶段列表': stageList
+    var _p = {
+      项目名: safeGet(project, 'projectName', ''),
+      培训目的: safeGet(project, 'purpose', ''),
+      培训类型: safeGet(project, 'type', ''),
+      整体安排: safeGet(project, 'overallPlan', ''),
+      项目开始: fmtDateTime(safeGet(project, 'startDate', '')),
+      项目结束: fmtDateTime(safeGet(project, 'endDate', '')),
+      阶段名: safeGet(stage, 'name', ''),
+      阶段时间: fmtStageTime(stage, project),
+      节点名: safeGet(n, 'label', ''),
+      节点时间: fmtDateTime(safeGet(ac, 'notifyAt', '')),
+      受众: audienceLabel,
+      文案: safeGet(ac, 'content', '')
     };
-  }
 
-  function runReplacements(raw, replacers) {
-    var out = raw;
-    var entries = Object.keys(replacers);
-    for (var i = 0; i < entries.length; i++) {
-      var key = entries[i];
-      var safe = String(replacers[key]);
-      out = out.replace(new RegExp('\\{\\{' + key + '\\}\\}', 'g'), safe);
-      out = out.replace(new RegExp('「' + key + '」', 'g'), safe);
-      out = out.replace(new RegExp('【' + key + '】', 'g'), safe);
-      out = out.replace(new RegExp('（' + key + '）', 'g'), safe); // 全角圆括号
-      out = out.replace(new RegExp('\\(' + key + '\\)', 'g'), safe);    // 半角圆括号
+    function getByKey(k) {
+      if (_p.hasOwnProperty(k)) return _p[k];
+      return '';
+    }
+
+    function renderOne(content) {
+      // 5 种占位符格式都尝试；短变量名（驼峰 + 短中文）都支持
+      // [v10.5 关键修复] String.replace 不支持 regex 数组参数，必须逐个 replace；
+      // 之前用数组方式传，v8 静默不替换——这就是为什么 Action 一直发原模板的根因之一。
+      var patterns = [
+        /\{\{([^{}]+)\}\}/g,
+        /「([^」]+)」/g,
+        /【([^】]+)】/g,
+        /（([^（）]+)）/g,
+        /\(([^()]+)\)/g
+      ];
+      for (var i = 0; i < patterns.length; i++) {
+        patterns[i].lastIndex = 0;  // 复用前重置
+        content = content.replace(patterns[i], function (_, k) {
+          return getByKey(k.trim());
+        });
+      }
+      return content;
+    }
+
+    var out = renderOne(content);
+    // 二次渲染（占位符里嵌占位符的特殊情况）
+    if (out !== content) {
+      var prev;
+      for (var i = 0; i < 3; i++) {
+        prev = out;
+        out = renderOne(out);
+        if (out === prev) break;
+      }
     }
     return out;
   }
 
-  // 三处统一的替换执行体：paste 模式原样返回；否则按 replacers + 5 格式替换
-  function applyReplacements(stage, _p, ac, raw) {
-    if (!raw) return raw;
-    if (ac && ac.inputMode === 'paste') return raw;
-    var replacers = buildReplacers(stage, _p, ac);
-    return runReplacements(raw, replacers);
-  }
-
-  // 前端入口（v10.html::replaceVars 等价）：从 n.audienceContent[aud] 取 ac
-  function replaceVars(stage, n, aud, content, proj) {
-    if (!content) return content;
-    var ac = (n && n.audienceContent && n.audienceContent[aud]) || {};
-    return applyReplacements(stage, proj || {}, ac, content);
-  }
-
-  // 后端入口（server.js / send-due-action.js::renderContent 等价）：ac 直接传入
+  // ---------- renderContent：与原版兼容的同步渲染 ----------
+  // [v10.5] 关键修复：在浏览器 / Action 调用前，先把 project 注入 n._project，
+  // 这样 replaceVars 在 Node 环境（无 state 全局）也能正确取到项目字段。
+  // 否则 Action 端 ReferenceError → catch 兜底发原模板（含 {{占位符}}）到群里。
   function renderContent(project, stage, n, ac) {
     if (!ac) return '';
-    var raw = ac.content || '';
-    if (!raw) return '';
-    return applyReplacements(stage, project || {}, ac, raw);
+    var aud = ac.audience || n.audience || 'student';
+    var nWithProj = n;
+    if (project && (!n._project || n._project !== project)) {
+      // 浅拷贝避免污染调用方引用
+      nWithProj = Object.assign({}, n, { _project: project });
+    }
+    return replaceVars(stage, nWithProj, aud, ac.content || '');
   }
 
-  // ---------- 统一发送 payload 构建（前端 cloudSend + Action send-due 共用） ----------
-  // 关键约束（v10.4 恢复图文混排）：
-  //   企微 webhook 的 markdown msgtype **不支持**内嵌图片（`![alt](url)` 会被降级为 `[alt](url)` 文字链接）。
-  //   要实现"图片按文中位置嵌在文字中间"的【图文混排】效果，唯一可行方案是【多条消息顺序发送】：
-  //     - 文本段落：msgtype='markdown'，content = 该段纯文本
-  //     - 图片段落：msgtype='image'，image = { base64, md5 }  (需先下载图、转 base64、算 MD5)
-  //   企微会按发送顺序把同一 bot 的连续消息聚合显示在群里，对外呈现"图文混排"。
-  //   template_card（单条大图+标题+描述卡片）不是图文混排，是卡片式排版，与用户既定方案不一致。
-  var SUPABASE_HOST_RE = /^https?:\/\/qyxxchifknfmvvyjvoue\.supabase\.co\/storage\/v1\/object\/public\//;
+  // ---------- 渲染 Markdown → 预览 HTML ----------
+  function renderMdPreview(md) {
+    if (!md) return '<span class="sub">（空）</span>';
+    var html = esc(md);
+    // ![alt](url) → <img>
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function (m, alt, url) {
+      return '<img src="' + esc(url) + '" alt="' + esc(alt) + '">';
+    });
+    // [text](url) → <a>
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (m, t, u) {
+      return '<a href="' + esc(u) + '" target="_blank">' + esc(t) + '</a>';
+    });
+    // **text** → <strong>
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // 换行
+    html = html.replace(/\n/g, '<br>');
+    return html;
+  }
+
+  // ============================================================
+  // v10.5 发送 payload 构建（news 单 article·图文混排真源）
+  // ============================================================
+  //
+  // 契约（前端 cloudSend + Edge Function send-v10 + Action send-due 共用）：
+  //   输入：renderedContent = 已替换占位符的最终文案（含可能的 ![alt](supabase-url) 语法）
+  //   输出：{ msgtype: 'news', news: { articles: [article] } } 或
+  //         { msgtype: 'markdown_v2', markdown_v2: { content } }（无图时）
+  //
+  // 关键约束（企微 API 硬限制）：
+  //   - news articles 长度 ≤ 10
+  //   - article.title ≤ 64 字
+  //   - article.description ≤ 512 字（且 url 必须有，否则 40039 invalid url size）
+  //   - article.picurl 必须是公网可访问的图片 URL
+  //   - 唯一一张主图：第一张 supabase 图作为 picurl；其他图作为 description 里的可点击链接
+  //   - 无图：降级为 markdown_v2（无内嵌图但纯文字够用）
 
   function extractImgs(text) {
     var arr = [];
@@ -199,135 +201,31 @@
     return arr;
   }
 
-  // 把渲染后的内容切分成「按出现顺序」的 text / image 段，是 buildSegmentedMessages / renderSegmentedPreview 共用的真源
-  // 返回: [{ type:'text'|'image', text?, alt?, url? }]
-  function splitIntoSegments(content) {
-    var segs = [];
-    if (!content) return segs;
-    var re = /!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)/g;
-    var lastIdx = 0;
-    var m;
-    while ((m = re.exec(content)) !== null) {
-      if (m.index > lastIdx) {
-        segs.push({ type: 'text', text: content.slice(lastIdx, m.index) });
-      }
-      segs.push({ type: 'image', alt: m[1] || '图片', url: m[2] });
-      lastIdx = m.index + m[0].length;
-    }
-    if (lastIdx < content.length) {
-      segs.push({ type: 'text', text: content.slice(lastIdx) });
-    }
-    return segs;
-  }
-
-  // 同步：Uint8Array -> base64 / MD5（Node 与浏览器双环境）
-  function uint8ToBase64(buf) {
-    if (typeof Buffer !== 'undefined' && Buffer.from) {
-      return Buffer.from(buf).toString('base64');
-    }
-    var bin = '';
-    for (var i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
-    return btoa(bin);
-  }
-  function uint8ToMd5Hex(buf) {
-    // Node（Action）：用 crypto
-    if (typeof require === 'function') {
-      try {
-        var crypto = require('crypto');
-        if (crypto && crypto.createHash) {
-          return crypto.createHash('md5').update(Buffer.from(buf)).digest('hex');
-        }
-      } catch (e) { /* fall through to browser */ }
-    }
-    // 浏览器：复用 md5-lite.min.js 暴露的 md5 全局（<script src="md5-lite.min.js">）
-    if (typeof md5 === 'function') {
-      return md5(Array.prototype.slice.call(buf));
-    }
-    throw new Error('MD5 not available: 浏览器需先加载 md5-lite.min.js；Node 需可访问 crypto');
-  }
-
-  // 构建企微发送的"多消息数组"（图文混排真源）
-  // 参数: renderedContent = 已替换占位符的最终文案
-  // options: {
-  //   testMode: bool,           // 测试模式：在首段前加【测试】
-  //   fetchImpl: Function,      // 可选：自定义 fetch（Node 18+ 全局 fetch 可用；测试可注入 mock）
-  //   downloadImages: bool,     // 是否下载图片转 base64+md5（默认 true；设为 false 时图片段会被跳过，节省带宽）
-  // }
-  // 返回: Promise<Array<WeComMessage>> —— 每条 msgtype ∈ {markdown, image}
-  // 抛出网络错误时，整段降级为：图片段用 __skip_image__ 标记（不抛错，调用方可决定如何处理）
-  async function buildSegmentedMessages(renderedContent, options) {
-    options = options || {};
-    var testMode = !!options.testMode;
-    var downloadImages = options.downloadImages !== false;
-    var fetchImpl = options.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
-
-    var raw = renderedContent || '';
-    if (testMode) raw = '【测试】' + raw;
-    var segs = splitIntoSegments(raw);
-
-    var out = [];
-    for (var i = 0; i < segs.length; i++) {
-      var seg = segs[i];
-      if (seg.type === 'text') {
-        var t = (seg.text || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-        if (t) out.push({ msgtype: 'markdown', markdown: { content: t } });
-      } else if (seg.type === 'image') {
-        if (!downloadImages) {
-          out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: 'downloadImages=false' });
-          continue;
-        }
-        if (!fetchImpl) {
-          out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: 'no fetchImpl' });
-          continue;
-        }
-        try {
-          var resp = await fetchImpl(seg.url);
-          if (!resp.ok) {
-            out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: 'HTTP ' + resp.status });
-            continue;
-          }
-          var buf = new Uint8Array(await resp.arrayBuffer());
-          out.push({
-            msgtype: 'image',
-            image: { base64: uint8ToBase64(buf), md5: uint8ToMd5Hex(buf) },
-            meta: { alt: seg.alt, url: seg.url, bytes: buf.length }
-          });
-        } catch (e) {
-          out.push({ msgtype: '__skip_image__', alt: seg.alt, url: seg.url, reason: (e && e.message) || String(e) });
-        }
-      }
-    }
-    return out;
-  }
-
-  // 前端预览渲染：把分段数组渲染成所见即所得的 HTML
-  // 视觉上对齐企微实际呈现：每段独立气泡（text 用 markdown 渲染，image 用 <img> 标签）
-  function renderSegmentedPreview(segments) {
-    if (!segments || segments.length === 0) return '<span class="sub">（空）</span>';
-    var html = '';
-    for (var i = 0; i < segments.length; i++) {
-      var seg = segments[i];
-      if (seg.type === 'text') {
-        var t = (seg.text || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-        if (t) html += '<div class="seg-msg seg-text">' + renderMdPreview(t) + '</div>';
-      } else if (seg.type === 'image') {
-        html += '<div class="seg-msg seg-image"><img src="' + esc(seg.url) + '" alt="' + esc(seg.alt || '图片') + '"></div>';
-      }
-    }
-    return html || '<span class="sub">（空）</span>';
-  }
-
-  // v10.3 临时方案：buildTemplateCard + renderTemplateCardPreview 保留为 legacy 导出，
-  // 防止外部代码误用；新代码请用 buildSegmentedMessages + renderSegmentedPreview。
-
-  // 把 markdown 里的图片语法移除并规整空白（template_card legacy 路径用）
   function stripImgs(text) {
-    return text.replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
-               .replace(/[ \t]+\n/g, '\n')
-               .replace(/\n{3,}/g, '\n\n')
-               .trim();
+    return String(text || '')
+      .replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
-  function buildTemplateCard(renderedContent, options) {
+
+  // 拆分纯文本为 title + description：
+  //   title = 第一段非空内容（最多 64 字，截断补省略号）
+  //   description = 剩余纯文本（最多 512 字；多图时把其他图作为可点击链接追加）
+  function splitTitleDesc(cleaned) {
+    var lines = cleaned.split(/\n+/);
+    var titleRaw = (lines.shift() || '通知').trim() || '通知';
+    var title = titleRaw.length > 64 ? titleRaw.slice(0, 63) + '…' : titleRaw;
+    var descriptionRaw = lines.join('\n').trim();
+    if (!descriptionRaw) descriptionRaw = cleaned.slice(0, 200).trim();
+    return { title: title, description: descriptionRaw };
+  }
+
+  // 同步构建企微发送 payload（图文混排真源）
+  // options:
+  //   testMode:    是否测试模式（在首段加【测试】）
+  //   articleUrl:  点击跳转 URL（必填，否则企微返回 40039）
+  function buildNewsPayload(renderedContent, options) {
     options = options || {};
     var testMode = !!options.testMode;
     var articleUrl = options.articleUrl || 'https://work.weixin.qq.com/';
@@ -338,85 +236,92 @@
     var imgs = extractImgs(raw);
     var cleaned = stripImgs(raw);
 
+    // 无图：降级 markdown_v2（纯文字够清晰）
     if (imgs.length === 0) {
-      return { msgtype: 'markdown', markdown: { content: raw } };
+      return { msgtype: 'markdown_v2', markdown_v2: { content: raw } };
     }
 
-    var lines = cleaned.split(/\n+/);
-    var title = ((lines.shift() || '通知').trim() || '通知').slice(0, 64);
-    var desc = (lines.join('\n').trim() || cleaned.slice(0, 200)).slice(0, 512);
+    // 有图：news 单 article
+    var split = splitTitleDesc(cleaned);
+    var title = split.title;
+    var description = split.description;
+
+    // 第一张图 = 主图（picurl）
+    var mainPic = imgs[0].url;
+
+    // 其他图：作为 description 里的可点击链接追加（保留上下文"图文混排"的语义）
+    if (imgs.length > 1) {
+      var moreLinks = imgs.slice(1).map(function (im, i) {
+        var alt = im.alt || ('图片' + (i + 2));
+        return '[查看图片：' + alt + '](' + im.url + ')';
+      }).join('\n');
+      description = (description ? description + '\n\n' : '') + moreLinks;
+    }
+
+    // description 截断到 512 字
+    if (description.length > 512) description = description.slice(0, 511) + '…';
 
     return {
-      msgtype: 'template_card',
-      template_card: {
-        card_type: 'image_text',
-        main_title: { title: title, desc: '' },
-        card_image: { url: imgs[0].url, aspect_ratio: 1.3 },
-        sub_title_text: desc,
-        card_action: { type: 1, url: articleUrl }
+      msgtype: 'news',
+      news: {
+        articles: [{
+          title: title,
+          description: description,
+          url: articleUrl,
+          picurl: mainPic
+        }]
       }
     };
   }
 
-  function renderTemplateCardPreview(payload) {
+  // 前端预览渲染：把 payload 渲染成企微 news 卡片样式的 HTML
+  // 视觉上对齐企微实际呈现：大图占顶 + 标题 + 多行描述 + 跳转提示
+  function renderNewsPreview(payload) {
     if (!payload) return '<span class="sub">（空）</span>';
-    if (payload.msgtype === 'markdown') {
-      return renderMdPreview(payload.markdown && payload.markdown.content);
+
+    // markdown_v2 纯文字（无图）：走 markdown 预览
+    if (payload.msgtype === 'markdown_v2') {
+      return '<div class="news-card news-card-text"><div class="news-body">' +
+        renderMdPreview(payload.markdown_v2 && payload.markdown_v2.content) +
+        '</div></div>';
     }
-    if (payload.msgtype === 'template_card' && payload.template_card) {
-      var card = payload.template_card;
-      var html = '<div class="tpl-card">';
-      if (card.card_image && card.card_image.url) {
-        html += '<div class="tpl-card-image"><img src="' + esc(card.card_image.url) + '" alt=""></div>';
-      }
-      if (card.main_title && (card.main_title.title || card.main_title.desc)) {
-        html += '<div class="tpl-card-title">' + esc(card.main_title.title || '') +
-                (card.main_title.desc ? '<div class="tpl-card-titledesc">' + esc(card.main_title.desc) + '</div>' : '') +
-                '</div>';
-      }
-      if (card.sub_title_text) {
-        html += '<div class="tpl-card-subtitle">' + esc(card.sub_title_text).replace(/\n/g, '<br>') + '</div>';
-      }
-      html += '</div>';
+
+    if (payload.msgtype === 'news' && payload.news && payload.news.articles && payload.news.articles.length) {
+      var html = '';
+      payload.news.articles.forEach(function (a) {
+        html += '<div class="news-card">';
+        if (a.picurl) {
+          html += '<div class="news-card-image"><img src="' + esc(a.picurl) + '" alt=""></div>';
+        }
+        html += '<div class="news-card-title">' + esc(a.title || '通知') + '</div>';
+        if (a.description) {
+          html += '<div class="news-card-desc">' + renderMdPreview(a.description) + '</div>';
+        }
+        html += '</div>';
+      });
       return html;
     }
+
     return '<span class="sub">（未知格式）</span>';
   }
 
-  // ---------- 前端预览用：markdown → HTML ----------
-  function esc(s) {
-    return (s || '').replace(/[&<>"]/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-    });
-  }
-  function renderMdPreview(md) {
-    if (!md) return '<span class="sub">（空）</span>';
-    var html = esc(md);
-    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function (m, alt, url) {
-      return '<img src="' + esc(url) + '" alt="' + esc(alt) + '">';
-    });
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (m, t, u) {
-      return '<a href="' + esc(u) + '" target="_blank">' + esc(t) + '</a>';
-    });
-    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\n/g, '<br>');
-    return html;
-  }
-
+  // ============================================================
+  // 导出
+  // ============================================================
   return {
     NBSP2: NBSP2,
+    // 变量替换 + 渲染
     replaceVars: replaceVars,
     renderContent: renderContent,
     renderMdPreview: renderMdPreview,
-    // v10.4 图文混排（新真源，前端 + Action 共用）
-    splitIntoSegments: splitIntoSegments,
-    buildSegmentedMessages: buildSegmentedMessages,
-    renderSegmentedPreview: renderSegmentedPreview,
-    // v10.3 临时方案（legacy，保留避免外部代码误用）
-    renderTemplateCardPreview: renderTemplateCardPreview,
-    buildTemplateCard: buildTemplateCard,
+    // v10.5 真源：news 单 article·图文混排
+    buildNewsPayload: buildNewsPayload,
+    renderNewsPreview: renderNewsPreview,
+    // 内部工具（导出供测试 / Action 使用）
     extractImgs: extractImgs,
     stripImgs: stripImgs,
+    splitTitleDesc: splitTitleDesc,
+    // 工具
     esc: esc,
     linkifyUrl: linkifyUrl,
     fmtDateTime: fmtDateTime,

@@ -134,6 +134,13 @@
   .ov-checkbox{width:18px;height:18px;cursor:pointer}
   .ov-row td,.ov-row th{vertical-align:middle}
   .ov-row.selected{background:#f0f6ff}
+  /* [v10.5] 推送概览分组视觉：未发送组浅蓝灰、已发送组淡灰——一眼分清"待处理 vs 历史归档" */
+  .ov-group-header td{font-size:12px;font-weight:600;color:#6b7280;padding:8px 12px;background:#f3f4f6;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;letter-spacing:.5px}
+  .ov-group-header.group-sent td{background:#f9fafb;color:#9ca3af}
+  .ov-row.group-pending td{background:#fffbf2}
+  .ov-row.group-sent td{background:#fafafa;color:#6b7280}
+  .ov-row.group-pending:hover td{background:#fff5d6}
+  .ov-row.group-sent:hover td{background:#f3f4f6}
   .drag-over{outline:2px dashed var(--brand);outline-offset:2px;background:#f2f6ff}
   .actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
   .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:none;align-items:center;justify-content:center;padding:20px}
@@ -152,20 +159,18 @@
   .wx-msg .wx-body img{max-width:100%;border-radius:6px;margin:6px 0;display:block}
   .wx-msg .wx-body a{color:#576b95}
   .wx-msg .wx-body strong{font-weight:700}
-  /* [v10.3] template_card 预览样式（与企微实际呈现对齐：大图占顶 + 标题 + 描述） */
-  .tpl-card{background:#fff;border-radius:6px;overflow:hidden;max-width:420px;border:1px solid #e5e7eb}
-  .tpl-card-image{width:100%;background:#f3f4f6;display:block;overflow:hidden}
-  .tpl-card-image img{width:100%;height:auto;display:block;object-fit:cover;max-height:280px}
-  .tpl-card-title{padding:12px 14px 4px;font-size:15px;font-weight:700;color:#111;line-height:1.4}
-  .tpl-card-titledesc{padding:2px 14px 0;font-size:12px;color:#6b7280;line-height:1.4}
-  .tpl-card-subtitle{padding:8px 14px 14px;font-size:14px;color:#374151;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+  /* [v10.5 图文混排] news 单 article 预览（对齐企微实际呈现：大图占顶 + 标题 + 多行描述） */
+  .news-card{background:#fff;border-radius:8px;overflow:hidden;max-width:480px;border:1px solid #e5e7eb;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  .news-card-text{border:1px solid #e5e7eb}
+  .news-card-text .news-body{padding:12px 14px;font-size:14px;line-height:1.7;color:#1f2329;white-space:pre-wrap;word-break:break-word}
+  .news-card-image{width:100%;background:#f3f4f6;display:block;overflow:hidden}
+  .news-card-image img{width:100%;height:auto;display:block;object-fit:cover;max-height:320px}
+  .news-card-title{padding:10px 14px 4px;font-size:15px;font-weight:600;color:#1f2329;line-height:1.4;border-top:1px solid #f0f0f0;margin-top:2px}
+  .news-card-desc{padding:6px 14px 14px;font-size:14px;color:#4b5563;line-height:1.7;word-break:break-word}
+  .news-card-desc a{color:#2563eb;text-decoration:none}
   /* [v10.4 图文混排] 预览对齐企微按发送顺序聚合的多消息气泡：每段独立气泡 */
   .wx-body.wx-seg{display:flex;flex-direction:column;gap:8px}
-  .seg-msg{background:#fff;border-radius:8px;padding:10px 12px;max-width:420px;font-size:14px;line-height:1.7;color:#1f2329;box-shadow:0 1px 2px rgba(0,0,0,.04);word-break:break-word}
-  .seg-text{white-space:pre-wrap}
-  .seg-text img{max-width:100%;border-radius:4px;margin:4px 0}
-  .seg-image{background:transparent;padding:0;box-shadow:none;text-align:center}
-  .seg-image img{max-width:100%;max-height:280px;border-radius:6px;display:block;margin:0 auto}
+  /* [v10.4 多消息分段] 预留类名（v10.5 改回 news 单 article 后未使用，但保留以防回归） */
   .close-x{float:right;cursor:pointer;color:var(--ink);font-size:22px;font-weight:600;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;transition:background .15s;margin:-6px -6px 0 0}
   .close-x:hover{background:var(--soft);color:var(--err)}
   #previewModal{z-index:60}
@@ -668,12 +673,13 @@
       return { success:true, url:pub.publicUrl, mime };
     }catch(e){ return {success:false, error:e.message}; }
   }
-  // [v10.4 恢复图文混排] 发送路径：
-  //   1) 优先走 Edge Function（send-v10，部署在 Supabase）—— 服务端下载图、转 base64、算 MD5，
-  //      按文中位置顺序发多条消息（markdown + image + markdown + image...），企微群按发送顺序聚合显示"图文混排"。
-  //   2) 降级 no-cors 直发：浏览器 fetch 拉图（仅在 Supabase Storage CORS 允许时能成功），同样分段发。
-  //      若图片下载失败（CORS / 404），降级为只发文本并标记哪些图被跳过。
-  //   3) 关键：已废弃 v10.3 的 template_card 卡片式排版（用户已确认与既定方案不一致）。
+  // [v10.5 图文混排真源] 发送路径：
+  //   1) 优先走 Edge Function（send-v10，部署在 Supabase）—— 服务端转发企微 webhook，
+  //      浏览器读得到真实回执（errcode/errmsg）；send-v10 内部也调用同一真源 buildNewsPayload，
+  //      与前端/Action 发的 payload 字节级一致。
+  //   2) 降级 no-cors 直发：浏览器 fetch(no-cors) 直发企微 webhook——picurl 是 supabase 公网 URL，
+  //      企微服务器自己抓，无需前端下载/转 base64；浏览器无法读取响应（opaque），仅盲发。
+  //   3) news 单 article 方案（大图 picurl + 多行 description + url 跳转）= 截图5 已确认的形态。
   async function cloudSend(items, testMode){
     if(_sb){
       try{
@@ -692,25 +698,17 @@
       const webhook = it.webhookUrl;
       if(!webhook){ results.push({ groupName: it.groupName, success:false, error:'缺少 webhook' }); continue; }
       try{
-        // [v10.4 图文混排] 调用 render-core.buildSegmentedMessages 构建消息数组——
-        // 浏览器 no-cors 路径和 Action sendWeCom 服务端路径共用同一函数，保证前端/云端发送格式字节级一致
-        const msgs = await RenderCore.buildSegmentedMessages(it.content, { testMode });
-        const skipped = [];
-        for(const m of msgs){
-          if(m.msgtype === '__skip_image__'){
-            skipped.push(m.alt + (m.reason ? '（' + m.reason + '）' : ''));
-            continue;
-          }
-          await postNoCors(webhook, m);
-        }
-        const success = skipped.length === 0;
+        // [v10.5 真源] 调 render-core.buildNewsPayload 同步构建 news 单 article payload——
+        // 与 Edge Function / Action 字节级一致；picurl 由企微服务端抓取，无需前端下载
+        const articleUrl = it.articleUrl || (state.project && (state.project.viewUrl||state.project.url)) || 'https://work.weixin.qq.com/';
+        const payload = RenderCore.buildNewsPayload(it.content, { testMode, articleUrl });
+        await postNoCors(webhook, payload);
         results.push({
           groupName: it.groupName,
-          success,
-          error: skipped.length ? ('已跳过 '+skipped.length+' 张图片：'+skipped.join('、')) : null,
-          sent: msgs.length - skipped.length,
-          skipped: skipped.length,
-          fallback:'no-cors'
+          success: true,
+          error: null,
+          fallback: 'no-cors',
+          format: payload.msgtype
         });
       }catch(ee){
         results.push({ groupName: it.groupName, success:false, error: ee.message || String(ee) });
@@ -2683,11 +2681,12 @@
     }
     const _tgMatch = globalGroups.find(g=> ac && ac.targetGroups && ac.targetGroups.includes(g.id));
     const _tgName = (_tgMatch && _tgMatch.name) || '目标群';
-    // [v10.4 图文混排] 预览 = 实际发送：调用 render-core.splitIntoSegments 分段，
-    // 再用 renderSegmentedPreview 渲染——与 Edge Function / Action 真实发送路径共用同一分段真源
-    const segments = RenderCore.splitIntoSegments(content);
+    // [v10.5 图文混排] 预览 = 实际发送：调 render-core.buildNewsPayload 构建 news payload，
+    // 再用 renderNewsPreview 渲染——与 Edge Function / Action 真实发送路径共用同一真源
+    const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
+    const payload = RenderCore.buildNewsPayload(content, { articleUrl });
     $('#previewTitle').textContent = '预览 · '+GROUPS_LABEL[aud]+'版';
-    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · '+esc(_tgName)+'</div><div class="wx-body wx-seg">'+RenderCore.renderSegmentedPreview(segments)+'</div></div>';
+    $('#previewBody').innerHTML = '<div class="wx-msg"><div class="wx-name">企业微信群 · '+esc(_tgName)+'</div><div class="wx-body">'+RenderCore.renderNewsPreview(payload)+'</div></div>';
     $('#previewModal').classList.add('show');
   }
   function openPreviewAll(stage, n){
@@ -2703,8 +2702,8 @@
         console.warn('[openPreviewAll] replaceVars 失败 ('+a+'):', e);
       }
       const status = ac.enabled ? '' : '<span class="sub">（未启用）</span>';
-      const segments = RenderCore.splitIntoSegments(content);
-      html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body wx-seg">${RenderCore.renderSegmentedPreview(segments)}</div></div>`;
+      const payload = RenderCore.buildNewsPayload(content, { articleUrl });
+      html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body">${RenderCore.renderNewsPreview(payload)}</div></div>`;
     });
     $('#previewBody').innerHTML = html || '<span class="sub">（无）</span>';
     $('#previewModal').classList.add('show');
@@ -3141,8 +3140,21 @@
       card.appendChild(note);
     }
     const table = document.createElement('table'); table.id='overviewTable';
-    table.innerHTML = '<tr><th>项目</th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>' +
-      pagedRows.map(r=>{
+    // [v10.5 视觉分组] 按状态分组渲染：未发送组在前（待处理），已发送组在后（历史归档）。
+    // 同一页内若包含两类，插入分组标题行并加 class 区分背景色——视觉上一眼分清"待处理 vs 已处理"。
+    let prevGroup = null;
+    const groupHeader = (label, cls) => `<tr class="ov-group-header ${cls}"><td colspan="9">${esc(label)}</td></tr>`;
+    const renderedRows = [];
+    pagedRows.forEach(r => {
+      const isSent = r.status === 'sent';
+      const group = isSent ? 'sent' : 'pending';
+      const label = isSent ? '已发送（历史归档）' : '待发送（含草稿/失败/已跳过）';
+      if (prevGroup !== null && prevGroup !== group) {
+        renderedRows.push(groupHeader(label, 'group-' + group));
+      } else if (prevGroup === null) {
+        renderedRows.push(groupHeader(label, 'group-' + group));
+      }
+      prevGroup = group;
         let mark = '';
         if(r.time && r.status!=='sent'){
           const d = r.time.slice(0,10);
@@ -3155,8 +3167,9 @@
         const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
         const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
         const projCell = `${esc(r.proj)}`;
-        return `<tr class="ov-row" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer"><td>${projCell}</td><td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
-      }).join('');
+        renderedRows.push(`<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer"><td>${projCell}</td><td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`);
+    });
+    table.innerHTML = '<tr><th>项目</th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>' + renderedRows.join('');
     card.appendChild(table);
 
     if(totalRows > PAGE_SIZE){
