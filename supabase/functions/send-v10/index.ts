@@ -28,12 +28,20 @@ function extractImgs(text: string): { alt: string; url: string }[] {
   return arr;
 }
 
+// 清理 news description 不渲染的 markdown 语法（与 render-core.cleanMarkdownForNews 字节级一致）
+function cleanMarkdownForNews(text: string): string {
+  if (!text) return '';
+  let s = String(text);
+  s = s.replace(/!\[[^\]]*\]\(\s*[^)\s]+\s*\)/g, '');
+  s = s.replace(/!\[[^\]]*\]/g, '');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
+  s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1');
+  s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return s;
+}
+
 function stripImgs(text: string): string {
-  return String(text || '')
-    .replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return cleanMarkdownForNews(text);
 }
 
 function splitTitleDesc(cleaned: string): { title: string; description: string } {

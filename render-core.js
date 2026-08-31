@@ -201,12 +201,26 @@
     return arr;
   }
 
+  // 清理无法被 news description 渲染的 markdown 语法：
+  //   - ![alt](url) → 整体移除，图片提取由 extractImgs 独立完成（这里不参与判断）
+  //   - ![alt]（无 url） → 整体移除
+  //   - **bold** / *italic* → 去掉标记保留文本（news description 不渲染）
+  //   - 多余空行合并
+  // 注意：必须在 splitTitleDesc 之前调用，且对全图（含 supabase URL）做无差别剥离——
+  //   之前的"非 supabase 才剥"会导致残留 `(url)` 字面在 description 中。
+  function cleanMarkdownForNews(text) {
+    if (!text) return '';
+    var s = String(text);
+    s = s.replace(/!\[[^\]]*\]\(\s*[^)\s]+\s*\)/g, '');  // 完整 ![alt](url)
+    s = s.replace(/!\[[^\]]*\]/g, '');                    // 残余 ![alt]
+    s = s.replace(/\*\*([^*]+)\*\*/g, '$1');               // **bold**
+    s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '$1');    // *italic*
+    s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    return s;
+  }
+
   function stripImgs(text) {
-    return String(text || '')
-      .replace(/!\[([^\]]*)\]\(\s*[^)\s]+\s*\)/g, '')
-      .replace(/[ \t]+\n/g, '\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
+    return cleanMarkdownForNews(text);
   }
 
   // 拆分纯文本为 title + description：
@@ -319,6 +333,7 @@
     renderNewsPreview: renderNewsPreview,
     // 内部工具（导出供测试 / Action 使用）
     extractImgs: extractImgs,
+    cleanMarkdownForNews: cleanMarkdownForNews,
     stripImgs: stripImgs,
     splitTitleDesc: splitTitleDesc,
     // 工具

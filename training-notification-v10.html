@@ -134,13 +134,22 @@
   .ov-checkbox{width:18px;height:18px;cursor:pointer}
   .ov-row td,.ov-row th{vertical-align:middle}
   .ov-row.selected{background:#f0f6ff}
-  /* [v10.5] 推送概览分组视觉：未发送组浅蓝灰、已发送组淡灰——一眼分清"待处理 vs 历史归档" */
-  .ov-group-header td{font-size:12px;font-weight:600;color:#6b7280;padding:8px 12px;background:#f3f4f6;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;letter-spacing:.5px}
-  .ov-group-header.group-sent td{background:#f9fafb;color:#9ca3af}
-  .ov-row.group-pending td{background:#fffbf2}
+  /* [v10.6] 推送概览分组视觉清爽化：
+     - 标题行：纯灰底 + 左侧 4px 强色调色条（待发送蓝 / 已发送灰），首行字段感更强；
+     - 数据行：去浅黄，pending 走最浅的蓝白、sent 走中性灰，避免与首行字段同色冲突；
+     - hover 用对应色调的 4% 透明度版，让"可点击"仍然清晰但不刺眼。 */
+  .ov-group-header td{font-size:12px;font-weight:600;color:#374151;padding:8px 12px;background:#f3f4f6;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;letter-spacing:.4px;position:relative}
+  .ov-group-header td::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:#3370ff}
+  .ov-group-header.group-sent td{background:#f9fafb;color:#6b7280}
+  .ov-group-header.group-sent td::before{background:#9ca3af}
+  .ov-row.group-pending td{background:#f6f8fc}
   .ov-row.group-sent td{background:#fafafa;color:#6b7280}
-  .ov-row.group-pending:hover td{background:#fff5d6}
-  .ov-row.group-sent:hover td{background:#f3f4f6}
+  .ov-row.group-pending:hover td{background:#eaf1ff}
+  .ov-row.group-sent:hover td{background:#f0f1f3}
+  /* 分页条：三块（临近节点 / 待发送 / 已发送）各自独立，按钮禁用态更克制 */
+  .ov-pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:10px;font-size:12px;color:var(--sub)}
+  .ov-pager button{font-size:12px;padding:4px 10px}
+  .ov-pager button[disabled]{opacity:.5;cursor:not-allowed}
   .drag-over{outline:2px dashed var(--brand);outline-offset:2px;background:#f2f6ff}
   .actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
   .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:none;align-items:center;justify-content:center;padding:20px}
@@ -700,7 +709,7 @@
       try{
         // [v10.5 真源] 调 render-core.buildNewsPayload 同步构建 news 单 article payload——
         // 与 Edge Function / Action 字节级一致；picurl 由企微服务端抓取，无需前端下载
-        const articleUrl = it.articleUrl || (state.project && (state.project.viewUrl||state.project.url)) || 'https://work.weixin.qq.com/';
+        const articleUrl = it.articleUrl || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
         const payload = RenderCore.buildNewsPayload(it.content, { testMode, articleUrl });
         await postNoCors(webhook, payload);
         results.push({
@@ -894,7 +903,15 @@
   let pendingTestNotification = null;
   let pendingTestAudience = null;
   let listSearch = '', listSort = 'startDesc', listYear = '';
-  let overviewPage = 1; // 全局推送概览分页
+  let overviewPage = 1; // 全局推送概览分页（兼容旧逻辑）
+  // [v10.6] 三块独立分页：临近节点 5/页，待发送 10/页，已发送 5/页。
+  //   防止通知增多后单页滚动过长难以定位。
+  const UPCOMING_PAGE_SIZE = 5;
+  const PENDING_PAGE_SIZE = 10;
+  const SENT_PAGE_SIZE = 5;
+  let upcomingPage = 1;
+  let pendingPage = 1;
+  let sentPage = 1;
 
   const $ = (s,el=document)=>el.querySelector(s);
   const $$ = (s,el=document)=>Array.from(el.querySelectorAll(s));
@@ -2690,6 +2707,9 @@
     $('#previewModal').classList.add('show');
   }
   function openPreviewAll(stage, n){
+    // [v10.6 修复] articleUrl 必须在 forEach 外计算一次，避免每轮回调都重复跑条件链；
+    //   同时这是上一个版本遗失的局部变量——点击「预览全部」会 ReferenceError，整个弹窗无内容。
+    const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
     $('#previewTitle').textContent = '预览 · 全部受众版本';
     let html = '';
     AUDIENCES.forEach(a=>{
@@ -2701,7 +2721,7 @@
         content = (ac && ac.content) || '';
         console.warn('[openPreviewAll] replaceVars 失败 ('+a+'):', e);
       }
-      const status = ac.enabled ? '' : '<span class="sub">（未启用）</span>';
+      const status = ac.enabled ? '' : ' <span class="sub">(未启用)</span>';
       const payload = RenderCore.buildNewsPayload(content, { articleUrl });
       html += `<div class="wx-msg" style="margin-bottom:12px"><div class="wx-name">${esc(GROUPS_LABEL[a])}${status}</div><div class="wx-body">${RenderCore.renderNewsPreview(payload)}</div></div>`;
     });
@@ -3061,7 +3081,7 @@
     return upcoming;
   }
 
-  // 辅助：渲染临近节点卡片（支持空状态）
+  // 辅助：渲染临近节点卡片（支持空状态 + 5/页独立分页）
   function renderUpcomingCard(upcoming, singleProject){
     const uc = document.createElement('div'); uc.className='card';
     uc.innerHTML = `<h3>临近节点（未来 7 天）</h3>`;
@@ -3069,6 +3089,13 @@
       uc.innerHTML += '<p class="sub">暂无临近节点（未来 7 天内无待发送通知）。</p>';
       return uc;
     }
+    // [v10.6] 临近节点独立分页
+    const totalRows = upcoming.length;
+    const totalPages = Math.max(1, Math.ceil(totalRows / UPCOMING_PAGE_SIZE));
+    if(upcomingPage > totalPages) upcomingPage = totalPages;
+    if(upcomingPage < 1) upcomingPage = 1;
+    const startIdx = (upcomingPage - 1) * UPCOMING_PAGE_SIZE;
+    const paged = upcoming.slice(startIdx, startIdx + UPCOMING_PAGE_SIZE);
     const fmtCountdown=(ms)=>{
       if(ms<=0) return '已到期';
       const tot=Math.floor(ms/60000); const d=Math.floor(tot/1440); const h=Math.floor((tot%1440)/60); const m=tot%60;
@@ -3093,7 +3120,7 @@
     const uh = singleProject
       ? '<tr><th>状态</th><th>阶段</th><th>通知</th><th>发送时间</th><th>受众</th><th>提前1天</th><th>提前2小时</th></tr>'
       : '<tr><th>状态</th><th>项目</th><th>阶段</th><th>通知</th><th>发送时间</th><th>受众</th><th>提前1天</th><th>提前2小时</th></tr>';
-    ut.innerHTML = uh + upcoming.map(u=>{
+    ut.innerHTML = uh + paged.map(u=>{
       const timeCell = `<span>${esc(u.time)}</span>`;
       const statusCell = u.allSent ? sentBadge(u) : `<span class="countdown ${u.diff<=2*3600*1000?'urgent':''}">${fmtCountdown(u.diff)}</span>`;
       if(singleProject){
@@ -3102,6 +3129,16 @@
       return `<tr class="upcoming-row" data-pid="${esc(u.pid)}" data-nid="${esc(u.nid)}" style="cursor:pointer"><td>${statusCell}</td><td>${esc(u.proj)}</td><td>${esc(u.stage)}</td><td>${esc(u.notif)}</td><td>${timeCell}</td><td>${esc(u.auds)}</td><td>${rPill(u.r1)}</td><td>${rPill(u.r2)}</td></tr>`;
     }).join('');
     uc.appendChild(ut);
+    // 分页条
+    if(totalPages > 1){
+      const pager = document.createElement('div'); pager.className='ov-pager';
+      pager.innerHTML = `<span>共 ${totalRows} 条，第 ${upcomingPage}/${totalPages} 页</span>
+        <button class="ghost" data-uc-prev ${upcomingPage<=1?'disabled':''}>上一页</button>
+        <button class="ghost" data-uc-next ${upcomingPage>=totalPages?'disabled':''}>下一页</button>`;
+      uc.appendChild(pager);
+      pager.querySelector('[data-uc-prev]').addEventListener('click',()=>{ if(upcomingPage>1){ upcomingPage--; render(); } });
+      pager.querySelector('[data-uc-next]').addEventListener('click',()=>{ if(upcomingPage<totalPages){ upcomingPage++; render(); } });
+    }
     return uc;
   }
 
@@ -3110,114 +3147,177 @@
     return singleProject ? buildProjectOverviewPanel() : buildGlobalOverviewPanel();
   }
 
-  // 全局推送概览（主界面）：只读 + 分页 + 临近节点置顶
+  // 通用：渲染一组概览行（带分组标题、分页条、可点击行）
+  // 用于全局与项目内两个面板共享
+  //   rows: 当前组（pending / sent）的全量行
+  //   sectionKey: 'pending' | 'sent'，决定 group class 与分页状态
+  //   sectionTitle: 分组标题（如「待发送」「已发送」）
+  //   renderRow: (row, group) => '<tr>...</tr>' 字符串
+  //   columnsHeader: '<th>...</th>' 字符串
+  //   allRows: 全量行（用于点击查找）
+  //   pageSize / getPage / setPage: 分页状态
+  function buildOverviewSection(card, opts){
+    const { rows, sectionKey, sectionTitle, renderRow, columnsHeader, allRows, pageSize, getPage, setPage, totalLabel, emptyHint } = opts;
+    const totalRows = rows.length;
+    if(totalRows === 0){
+      if(emptyHint){
+        const empty = document.createElement('div');
+        empty.className = 'ov-empty';
+        empty.innerHTML = `<p class="sub">${emptyHint}</p>`;
+        card.appendChild(empty);
+      }
+      return;
+    }
+    // 分组标题行
+    const groupHeader = `<tr class="ov-group-header group-${sectionKey}"><td colspan="${columnsHeader.match(/<th/g)?.length || 9}">${esc(sectionTitle)}（${totalRows}）</td></tr>`;
+    // 分页
+    const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+    let curPage = getPage();
+    if(curPage > totalPages) { setPage(totalPages); curPage = totalPages; }
+    if(curPage < 1) { setPage(1); curPage = 1; }
+    const startIdx = (curPage - 1) * pageSize;
+    const paged = rows.slice(startIdx, startIdx + pageSize);
+    // 拼装表格
+    const table = document.createElement('table');
+    table.innerHTML = columnsHeader + groupHeader + paged.map(r=>renderRow(r, sectionKey)).join('');
+    card.appendChild(table);
+    // 分页条（多页时）
+    if(totalPages > 1){
+      const pager = document.createElement('div'); pager.className='ov-pager';
+      pager.innerHTML = `<span>${totalLabel || ''} 共 ${totalRows} 条，第 ${curPage}/${totalPages} 页</span>
+        <button class="ghost" data-ov-prev ${curPage<=1?'disabled':''}>上一页</button>
+        <button class="ghost" data-ov-next ${curPage>=totalPages?'disabled':''}>下一页</button>`;
+      card.appendChild(pager);
+      pager.querySelector('[data-ov-prev]').addEventListener('click',()=>{ if(getPage()>1){ setPage(getPage()-1); render(); } });
+      pager.querySelector('[data-ov-next]').addEventListener('click',()=>{ if(getPage()<totalPages){ setPage(getPage()+1); render(); } });
+    }
+    // 行点击
+    $$('.ov-row', table).forEach(tr=> tr.addEventListener('click',(e)=>{
+      // 项目内视图：复选框列点击不触发弹窗
+      if(e.target.closest('.ov-row-check')) return;
+      const r = allRows.find(x=>x.key===tr.dataset.key);
+      if(r) openOverviewPopup(r);
+    }));
+  }
+
+  // 全局推送概览（主界面）：三块独立分页 + 视觉分组
   function buildGlobalOverviewPanel(){
     const rows = buildOverviewRows(false);
-    const totalRows = rows.length;
-    const PAGE_SIZE = 15;
-    const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
-    if(overviewPage > totalPages) overviewPage = totalPages;
-    if(overviewPage < 1) overviewPage = 1;
-    const startIdx = (overviewPage - 1) * PAGE_SIZE;
-    const pagedRows = rows.slice(startIdx, startIdx + PAGE_SIZE);
+    // 按状态拆分：待发送（draft/failed/skipped/paused）+ 已发送（sent）
+    const pendingRows = rows.filter(r => r.status !== 'sent');
+    const sentRows = rows.filter(r => r.status === 'sent');
+    const todayIso = new Date().toISOString().slice(0,10);
+    const tomorrowIso = new Date(Date.now()+24*60*60*1000).toISOString().slice(0,10);
+    const fmtRow = (r, group) => {
+      let mark = '';
+      if(r.time && r.status!=='sent'){
+        const d = r.time.slice(0,10);
+        if(d===todayIso) mark = '<span class="pill today">今天</span>';
+        else if(d===tomorrowIso) mark = '<span class="pill soon">明天</span>';
+      }
+      const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
+      const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
+      const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
+      const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
+      const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
+      return `<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer"><td>${esc(r.proj)}</td><td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
+    };
+    const COLS_GLOBAL = '<tr><th>项目</th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>';
 
     const frag = document.createDocumentFragment();
     const upcoming = buildUpcomingNodes(false);
 
-    // 临近节点置顶（空状态也显示功能区）
+    // 1) 临近节点置顶（带 5/页分页）
     frag.appendChild(renderUpcomingCard(upcoming, false));
 
-    // 推送概览表格
+    // 2) 主卡片：分两组渲染
     const card = document.createElement('div'); card.className='card';
-    const now = new Date();
-    const todayStr = now.toISOString().slice(0,10);
-    const tomorrow = new Date(now.getTime()+24*60*60*1000).toISOString().slice(0,10);
     card.innerHTML = `<h3>推送概览</h3>`;
     if(rows.length===0){ card.innerHTML += '<p class="sub">暂无通知。</p>'; }
     else {
-      const note = document.createElement('p'); note.className='sub'; note.style.margin='8px 0 0';
+      const note = document.createElement('p'); note.className='sub'; note.style.margin='4px 0 12px';
       note.textContent = '全局视图：跨项目的批量操作请在对应项目内执行，点击项目名可进入项目。';
       card.appendChild(note);
     }
-    const table = document.createElement('table'); table.id='overviewTable';
-    // [v10.5 视觉分组] 按状态分组渲染：未发送组在前（待处理），已发送组在后（历史归档）。
-    // 同一页内若包含两类，插入分组标题行并加 class 区分背景色——视觉上一眼分清"待处理 vs 已处理"。
-    let prevGroup = null;
-    const groupHeader = (label, cls) => `<tr class="ov-group-header ${cls}"><td colspan="9">${esc(label)}</td></tr>`;
-    const renderedRows = [];
-    pagedRows.forEach(r => {
-      const isSent = r.status === 'sent';
-      const group = isSent ? 'sent' : 'pending';
-      const label = isSent ? '已发送（历史归档）' : '待发送（含草稿/失败/已跳过）';
-      if (prevGroup !== null && prevGroup !== group) {
-        renderedRows.push(groupHeader(label, 'group-' + group));
-      } else if (prevGroup === null) {
-        renderedRows.push(groupHeader(label, 'group-' + group));
-      }
-      prevGroup = group;
-        let mark = '';
-        if(r.time && r.status!=='sent'){
-          const d = r.time.slice(0,10);
-          if(d===todayStr) mark = '<span class="pill today">今天</span>';
-          else if(d===tomorrow) mark = '<span class="pill soon">明天</span>';
-        }
-        const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
-        const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
-        const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
-        const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
-        const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
-        const projCell = `${esc(r.proj)}`;
-        renderedRows.push(`<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer"><td>${projCell}</td><td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`);
+    // 待发送组
+    buildOverviewSection(card, {
+      rows: pendingRows,
+      sectionKey: 'pending',
+      sectionTitle: '待发送',
+      renderRow: fmtRow,
+      columnsHeader: COLS_GLOBAL,
+      allRows: rows,
+      pageSize: PENDING_PAGE_SIZE,
+      getPage: ()=> pendingPage,
+      setPage: (p)=>{ pendingPage = p; },
+      totalLabel: '待发送',
+      emptyHint: pendingRows.length === 0 && sentRows.length > 0 ? '暂无待发送通知。' : null
     });
-    table.innerHTML = '<tr><th>项目</th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>' + renderedRows.join('');
-    card.appendChild(table);
-
-    if(totalRows > PAGE_SIZE){
-      const pager = document.createElement('div'); pager.className='pager'; pager.style.cssText='display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px;font-size:13px';
-      pager.innerHTML = `<span class="sub">共 ${totalRows} 条，第 ${overviewPage}/${totalPages} 页</span>
-        <button class="ghost" ${overviewPage<=1?'disabled':''} id="ovPrevPage">上一页</button>
-        <button class="ghost" ${overviewPage>=totalPages?'disabled':''} id="ovNextPage">下一页</button>`;
-      card.appendChild(pager);
-    }
+    // 已发送组
+    buildOverviewSection(card, {
+      rows: sentRows,
+      sectionKey: 'sent',
+      sectionTitle: '已发送（历史归档）',
+      renderRow: fmtRow,
+      columnsHeader: '',  // 已发送组不重复表头
+      allRows: rows,
+      pageSize: SENT_PAGE_SIZE,
+      getPage: ()=> sentPage,
+      setPage: (p)=>{ sentPage = p; },
+      totalLabel: '已发送',
+      emptyHint: pendingRows.length > 0 && sentRows.length === 0 ? '暂无已发送通知。' : null
+    });
     frag.appendChild(card);
 
-    // 事件绑定
-    if(rows.length>0){
-      $$('.ov-row', card).forEach(tr=> tr.addEventListener('click',(e)=>{
-        const r = rows.find(x=>x.key===tr.dataset.key);
-        if(r) openOverviewPopup(r);
+    // 临近节点行点击
+    if(upcoming.length>0){
+      $$('.upcoming-row', frag).forEach(tr=> tr.addEventListener('click',()=>{
+        const pid=tr.dataset.pid, nid=tr.dataset.nid;
+        const u=upcoming.find(x=>x.pid===pid&&x.nid===nid);
+        if(u) openUpcomingPopup(u);
       }));
-      const prev = $('#ovPrevPage', card);
-      const next = $('#ovNextPage', card);
-      if(prev) prev.addEventListener('click',()=>{ if(overviewPage>1){ overviewPage--; render(); } });
-      if(next) next.addEventListener('click',()=>{ if(overviewPage<totalPages){ overviewPage++; render(); } });
     }
-    if(upcoming.length>0){ $$('.upcoming-row', frag).forEach(tr=> tr.addEventListener('click',()=>{ const pid=tr.dataset.pid, nid=tr.dataset.nid; const u=upcoming.find(x=>x.pid===pid&&x.nid===nid); if(u) openUpcomingPopup(u); })); }
     return frag;
   }
 
-  // 项目内推送概览：临近节点置顶 + 批量操作
+  // 项目内推送概览：临近节点置顶 + 批量操作 + 三块独立分页
   function buildProjectOverviewPanel(){
     const rows = buildOverviewRows(true);
-    const totalRows = rows.length;
-    const PAGE_SIZE = Math.max(totalRows, 1);
-    const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
-    if(overviewPage > totalPages) overviewPage = totalPages;
-    if(overviewPage < 1) overviewPage = 1;
-    const startIdx = (overviewPage - 1) * PAGE_SIZE;
-    const pagedRows = rows.slice(startIdx, startIdx + PAGE_SIZE);
+    // 按状态拆分（与全局视图保持对称的"待发送 / 已发送"两块）
+    const pendingRows = rows.filter(r => r.status !== 'sent');
+    const sentRows = rows.filter(r => r.status === 'sent');
+    const now = new Date();
+    const todayIso = now.toISOString().slice(0,10);
+    const tomorrowIso = new Date(now.getTime()+24*60*60*1000).toISOString().slice(0,10);
+
+    const fmtRow = (r, group) => {
+      let mark = '';
+      if(r.time && r.status!=='sent'){
+        const d = r.time.slice(0,10);
+        if(d===todayIso) mark = '<span class="pill today">今天</span>';
+        else if(d===tomorrowIso) mark = '<span class="pill soon">明天</span>';
+      }
+      const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
+      const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
+      const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
+      const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
+      const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
+      const chk = `<td><input type="checkbox" class="ov-checkbox ov-row-check" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}"></td>`;
+      return `<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer">${chk}<td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
+    };
+    // 项目内视图表头：带复选框列；只有"待发送"组用复选框（已发送不允许批量改时间等）
+    const COLS_PROJ_PENDING = `<tr><th style="width:30px"><input type="checkbox" id="ovHeadCheck" class="ov-checkbox" title="全选"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>`;
+    // 已发送组不重复表头与全选框
+    const COLS_PROJ_SENT = `<tr><th style="width:30px"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>`;
 
     const frag = document.createDocumentFragment();
     const upcoming = buildUpcomingNodes(true);
 
-    // 临近节点置顶（空状态也显示功能区）
+    // 临近节点置顶（带 5/页分页）
     frag.appendChild(renderUpcomingCard(upcoming, true));
 
-    // 推送概览表格
+    // 主卡片
     const card = document.createElement('div'); card.className='card';
-    const now = new Date();
-    const todayStr = now.toISOString().slice(0,10);
-    const tomorrow = new Date(now.getTime()+24*60*60*1000).toISOString().slice(0,10);
     card.innerHTML = `<h3>推送概览</h3>`;
     if(rows.length===0){ card.innerHTML += '<p class="sub">暂无通知。</p>'; }
     else {
@@ -3231,35 +3331,38 @@
         <button class="primary" id="ovBulkGenerate">批量生成通知</button>`;
       card.appendChild(bulkbar);
     }
-    const table = document.createElement('table'); table.id='overviewTable';
-    table.innerHTML = '<tr><th style="width:30px"><input type="checkbox" id="ovHeadCheck" class="ov-checkbox" title="全选"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>' +
-      pagedRows.map(r=>{
-        let mark = '';
-        if(r.time && r.status!=='sent'){
-          const d = r.time.slice(0,10);
-          if(d===todayStr) mark = '<span class="pill today">今天</span>';
-          else if(d===tomorrow) mark = '<span class="pill soon">明天</span>';
-        }
-        const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
-        const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
-        const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
-        const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
-        const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
-        const chk = `<td><input type="checkbox" class="ov-checkbox ov-row-check" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}"></td>`;
-        return `<tr class="ov-row" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer">${chk}<td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
-      }).join('');
-    card.appendChild(table);
+    // 待发送组（含批量操作 UI）
+    buildOverviewSection(card, {
+      rows: pendingRows,
+      sectionKey: 'pending',
+      sectionTitle: '待发送',
+      renderRow: fmtRow,
+      columnsHeader: COLS_PROJ_PENDING,
+      allRows: rows,
+      pageSize: PENDING_PAGE_SIZE,
+      getPage: ()=> pendingPage,
+      setPage: (p)=>{ pendingPage = p; },
+      totalLabel: '待发送',
+      emptyHint: pendingRows.length === 0 && sentRows.length > 0 ? '暂无待发送通知。' : null
+    });
+    // 已发送组（无复选框列）
+    buildOverviewSection(card, {
+      rows: sentRows,
+      sectionKey: 'sent',
+      sectionTitle: '已发送（历史归档）',
+      renderRow: fmtRow,
+      columnsHeader: COLS_PROJ_SENT,
+      allRows: rows,
+      pageSize: SENT_PAGE_SIZE,
+      getPage: ()=> sentPage,
+      setPage: (p)=>{ sentPage = p; },
+      totalLabel: '已发送',
+      emptyHint: pendingRows.length > 0 && sentRows.length === 0 ? '暂无已发送通知。' : null
+    });
     frag.appendChild(card);
 
-    // 批量操作事件
+    // 批量操作事件绑定（项目内）
     if(rows.length>0){
-      $$('.ov-row', card).forEach(tr=> tr.addEventListener('click',(e)=>{
-        if(e.target.closest('.ov-row-check')) return;
-        const r = rows.find(x=>x.key===tr.dataset.key);
-        if(r) openOverviewPopup(r);
-      }));
-      const headCheck = $('#ovHeadCheck', card);
-      const selectAll = $('#ovSelectAll', card);
       const updateCount = ()=>{
         const checked = $$('.ov-row-check:checked', card);
         const count = checked.length;
@@ -3271,17 +3374,28 @@
         $$('.ov-row', card).forEach(tr=> tr.classList.remove('selected'));
         checked.forEach(cb=> cb.closest('tr').classList.add('selected'));
       };
-      const toggleAll = (checked)=>{ $$('.ov-row-check', card).forEach(cb=> cb.checked=checked); updateCount(); };
+      const toggleAll = (checked)=>{
+        $$('.ov-row-check', card).forEach(cb=> cb.checked=checked);
+        updateCount();
+      };
+      const headCheck = $('#ovHeadCheck', card);
+      const selectAll = $('#ovSelectAll', card);
       if(headCheck) headCheck.addEventListener('change',()=> toggleAll(headCheck.checked));
       if(selectAll) selectAll.addEventListener('change',()=> toggleAll(selectAll.checked));
       card.addEventListener('change',(e)=>{ if(e.target.classList.contains('ov-row-check')) updateCount(); });
-      $('#ovBulkEnable', card).addEventListener('click',()=> bulkEnable(true));
-      $('#ovBulkDisable', card).addEventListener('click',()=> bulkEnable(false));
-      $('#ovBulkDelete', card).addEventListener('click', bulkDelete);
-      $('#ovBulkTime', card).addEventListener('click', openBulkTimeModal);
-      $('#ovBulkGenerate', card).addEventListener('click', openBulkGenerateModal);
+      const be = $('#ovBulkEnable', card); if(be) be.addEventListener('click',()=> bulkEnable(true));
+      const bd = $('#ovBulkDisable', card); if(bd) bd.addEventListener('click',()=> bulkEnable(false));
+      const bdt = $('#ovBulkDelete', card); if(bdt) bdt.addEventListener('click', bulkDelete);
+      const bt = $('#ovBulkTime', card); if(bt) bt.addEventListener('click', openBulkTimeModal);
+      const bg = $('#ovBulkGenerate', card); if(bg) bg.addEventListener('click', openBulkGenerateModal);
     }
-    if(upcoming.length>0){ $$('.upcoming-row', frag).forEach(tr=> tr.addEventListener('click',()=>{ const pid=tr.dataset.pid, nid=tr.dataset.nid; const u=upcoming.find(x=>x.pid===pid&&x.nid===nid); if(u) openUpcomingPopup(u); })); }
+    if(upcoming.length>0){
+      $$('.upcoming-row', frag).forEach(tr=> tr.addEventListener('click',()=>{
+        const pid=tr.dataset.pid, nid=tr.dataset.nid;
+        const u=upcoming.find(x=>x.pid===pid&&x.nid===nid);
+        if(u) openUpcomingPopup(u);
+      }));
+    }
     return frag;
   }
 
