@@ -187,7 +187,7 @@
   .toolbar-right{margin-left:auto;display:flex;gap:8px;align-items:center}
   .group-row{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:#fff}
   .group-row .name{flex:1;font-weight:500}
-  .group-row .url{flex:2;color:var(--sub);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .group-row .url{flex:2;color:var(--sub);font-size:12px;word-break:break-all;line-height:1.5}
   .pinned{background:#fffbe8 !important;border-color:#ffe7a3 !important}
   .vars{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
   .vars button{font-size:11px;padding:3px 8px}
@@ -293,6 +293,30 @@
         <div class="field"><label>Webhook URL</label><input type="text" id="gUrl" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div>
         <button class="primary" id="btnAddGroup" style="margin-bottom:8px">添加</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑群弹窗（嵌套于群通讯录） -->
+<div class="modal-mask" id="editGroupModal">
+  <div class="modal">
+    <span class="close-x" data-close="editGroupModal">×</span>
+    <h3>编辑群</h3>
+    <div class="row">
+      <div class="field" style="flex:1;min-width:240px"><label>群名称</label><input type="text" id="egName"></div>
+      <div class="field" style="max-width:140px"><label>类型</label>
+        <select id="egType"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select>
+      </div>
+    </div>
+    <div class="field" style="margin:8px 0"><label>Webhook URL（可点击右侧复制完整链接验证）</label>
+      <div class="row" style="gap:6px">
+        <input type="text" id="egUrl" style="flex:1">
+        <button class="ghost mini-btn" id="egCopy" type="button">复制</button>
+      </div>
+    </div>
+    <div class="actions" style="justify-content:flex-end;margin-top:14px">
+      <button class="ghost" data-close="editGroupModal">取消</button>
+      <button class="primary" id="btnSaveEditGroup">保存</button>
     </div>
   </div>
 </div>
@@ -677,6 +701,9 @@
     for(const it of (items||[])){
       const webhook = it.webhookUrl;
       const rawContent = (testMode?'【测试】':'') + (it.content||'');
+      // [v10.2 root-fix] news articles 的 url 是必填（点击跳转链接），缺则企微返回 40039 invalid url size
+      // 之前漏了 url 字段 → no-cors 模式下浏览器看不到 errcode → UI 误判成功 → 群里实际收不到
+      const articleUrl = it.articleUrl || 'https://work.weixin.qq.com/';
       try{
         const imgs = extractImgs(rawContent);
         if(imgs.length === 0){
@@ -688,11 +715,11 @@
           const cleaned = stripImgs(rawContent);
           const { title, description } = splitForNews(cleaned);
           const articles = [];
-          // 第一篇：标题 + 描述 + 第一张图（大图）
-          articles.push({ title, description, picurl: imgs[0].url });
-          // 后续每张图：title=图片 alt（最多 64 字），description=空，picurl=图片 URL
+          // 第一篇：标题 + 描述 + 第一张图（大图）+ 跳转 url（必填）
+          articles.push({ title, description, url: articleUrl, picurl: imgs[0].url });
+          // 后续每张图：title=图片 alt（最多 64 字），description=空，url=同上，picurl=图片 URL
           for(let i=1;i<imgs.length;i++){
-            articles.push({ title: imgs[i].alt.slice(0,64)||('图片'+(i+1)), description:'', picurl: imgs[i].url });
+            articles.push({ title: imgs[i].alt.slice(0,64)||('图片'+(i+1)), description:'', url: articleUrl, picurl: imgs[i].url });
           }
           await postNoCors(webhook, { msgtype:'news', news:{ articles: articles.slice(0, 10) } });
           results.push({
@@ -2599,7 +2626,12 @@
     const items=[];
     (ac.targetGroups||[]).forEach(gid=>{
       const g = globalGroups.find(x=>x.id===gid);
-      if(g && g.webhookUrl) items.push({webhookUrl:g.webhookUrl, content:content, groupName:g.name});
+      if(g && g.webhookUrl){
+        // [v10.2 root-fix] news articles 需要 url 字段（点击跳转链接），缺则企微返回 40039 invalid url size
+        // 优先级：该项目 stage.viewUrl > stage.url > project.viewUrl > 占位
+        const articleUrl = (stage && (stage.viewUrl||stage.url)) || (project && (project.viewUrl||project.url)) || 'https://work.weixin.qq.com/';
+        items.push({webhookUrl:g.webhookUrl, content:content, groupName:g.name, articleUrl});
+      }
     });
     return items;
   }
@@ -2770,12 +2802,106 @@
       d.innerHTML=`<button class="ghost mini-btn" data-pin="${g.id}" title="置顶">${g.pinned?'★':'☆'}</button>
         <span class="pill ${g.type}">${GROUPS_LABEL[g.type]||g.type}</span>
         <span class="name">${esc(g.name)}</span>
-        <span class="url">${esc(g.webhookUrl)}</span>
+        <span class="url"><a href="${esc(g.webhookUrl)}" target="_blank" rel="noopener noreferrer" title="新窗口打开 webhook（用于查看企业微信群机器人配置）">${esc(g.webhookUrl)}</a></span>
+        <button class="ghost mini-btn" data-copy="${g.id}" title="复制完整 Webhook URL（含 key）">复制链接</button>
+        <button class="ghost mini-btn" data-test="${g.id}" title="向该群发送一条「测试」文本，立即验证 webhook 是否可达">测试</button>
+        <button class="ghost mini-btn" data-edit="${g.id}" title="编辑群名称、类型、URL">编辑</button>
         <button class="ghost danger mini-btn" data-del="${g.id}">删除</button>`;
       d.querySelector('[data-pin]').addEventListener('click',()=>{ g.pinned=!g.pinned; saveGlobalGroups(); renderGroups(); if(view==='edit') render(); });
       d.querySelector('[data-del]').addEventListener('click',()=>{ globalGroups=globalGroups.filter(x=>x.id!==g.id); saveGlobalGroups(); renderGroups(); if(view==='edit') render(); });
+      d.querySelector('[data-copy]').addEventListener('click',async ()=>{
+        try{
+          await navigator.clipboard.writeText(g.webhookUrl||'');
+          toast(`已复制「${esc(g.name)}」Webhook`);
+        }catch(e){
+          const ta=document.createElement('textarea'); ta.value=g.webhookUrl||''; document.body.appendChild(ta); ta.select();
+          try{ document.execCommand('copy'); toast(`已复制「${esc(g.name)}」Webhook`); }catch(_){ toast('复制失败，请手动选择 URL', {tone:'warn'}); }
+          document.body.removeChild(ta);
+        }
+      });
+      d.querySelector('[data-test]').addEventListener('click', async ()=>{
+        const ts = new Date().toLocaleString('zh-CN',{hour12:false});
+        const payload = { msgtype:'text', text:{ content: `【Webhook 测试】群机器人「${g.name}」${ts} 收到本条说明 webhook 有效。` }};
+        // 优先 Edge Function（拿到真 errcode）；失败降级 no-cors
+        let realErr = null;
+        if(_sb){
+          try{
+            const { data, error } = await _sb.functions.invoke('send-v10', { body:{ items:[{...g, content: payload.text.content}], testMode:true } });
+            if(!error && data && data.results && data.results[0]){
+              realErr = data.results[0].error;
+            }
+          }catch(_){ /* 降级 */ }
+        }
+        if(realErr){
+          toast(`「${esc(g.name)}」发送失败：${realErr}（请到「群机器人」配置页确认 key 仍然有效）`, {tone:'warn', duration: 8000});
+          console.warn('[group-test]', g.name, realErr);
+        } else {
+          // no-cors fallback：浏览器看不到响应，提示用户去群里确认
+          await fetch(g.webhookUrl, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+          toast(`「${esc(g.name)}」测试已发出，请到该群确认是否收到（EdgeOne 静态版无法读回执，仅云端返回可见）`);
+        }
+      });
+      d.querySelector('[data-edit]').addEventListener('click',()=>{ openEditGroupModal(g.id); });
       wrap.appendChild(d);
     });
+  }
+
+  // 编辑群：把当前 g 的 name/type/webhookUrl 回填到弹窗，支持改错码、保存后实时刷新关联项目
+  let _editingGroupId = null;
+  let _editGroupBindingsDone = false;
+  function setupEditGroupBindings(){
+    if(_editGroupBindingsDone) return;
+    _editGroupBindingsDone = true;
+    const copyBtn = document.getElementById('egCopy');
+    if(copyBtn){
+      copyBtn.addEventListener('click', async ()=>{
+        const v = document.getElementById('egUrl').value || '';
+        try{ await navigator.clipboard.writeText(v); toast('已复制 Webhook'); }
+        catch(_){
+          const ta=document.createElement('textarea'); ta.value=v; document.body.appendChild(ta); ta.select();
+          try{ document.execCommand('copy'); toast('已复制 Webhook'); }catch(__){ toast('复制失败，请手动选择', {tone:'warn'}); }
+          document.body.removeChild(ta);
+        }
+      });
+    }
+    const saveBtn = document.getElementById('btnSaveEditGroup');
+    if(saveBtn){
+      saveBtn.addEventListener('click', async ()=>{
+        if(!_editingGroupId){ return; }
+        const g = (globalGroups||[]).find(x=>x.id===_editingGroupId);
+        if(!g){ toast('群已不存在', {tone:'warn'}); return; }
+        const newName = ($('#egName').value||'').trim() || g.name;
+        const newType = $('#egType').value || g.type || 'student';
+        const newUrl = ($('#egUrl').value||'').trim();
+        if(!newUrl){ toast('Webhook URL 不能为空', {tone:'warn'}); return; }
+        if(!/^https?:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=.+/i.test(newUrl)){
+          toast('URL 必须是企业微信群机器人 Webhook（…/webhook/send?key=…）', {tone:'warn'}); return;
+        }
+        const oldUrl = g.webhookUrl;
+        g.name = newName;
+        g.type = newType;
+        g.webhookUrl = newUrl;
+        await saveGlobalGroups();
+        if(oldUrl && oldUrl !== newUrl){
+          toast(`已保存「${esc(g.name)}」— Webhook 已更新`);
+        } else {
+          toast(`已保存「${esc(g.name)}」`);
+        }
+        $('#editGroupModal').classList.remove('show');
+        renderGroups();
+        if(view==='edit') render();
+      });
+    }
+  }
+  function openEditGroupModal(gid){
+    setupEditGroupBindings();   // idempotent，首次弹时绑定一次
+    const g = (globalGroups||[]).find(x=>x.id===gid);
+    if(!g){ toast('找不到该群', {tone:'warn'}); return; }
+    _editingGroupId = gid;
+    $('#egName').value = g.name || '';
+    $('#egType').value = g.type || 'student';
+    $('#egUrl').value = g.webhookUrl || '';
+    $('#editGroupModal').classList.add('show');
   }
   function filterGroups(groups){
     const q = ($('#gSearch').value||'').toLowerCase();

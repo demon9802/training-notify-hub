@@ -73,6 +73,9 @@ makers_help.txt
 .edgeone-cookies.txt
 .edgeone-check/
 
+# Supabase CLI 临时目录
+supabase/.temp/
+
 # 测试图片
 test-*.jpg
 test-*.png
