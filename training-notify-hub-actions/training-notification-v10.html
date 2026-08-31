@@ -666,13 +666,17 @@
   // 浏览器无法读取响应（opaque），但请求**会送达**企微服务器，规避 CORS 阻断。
   // [v10.2] 图片消息：改为企微 news（图文）msgtype —— 一个 article = title+description+picurl，
   //       让图片和文案在同一条消息里整体呈现（替代之前 markdown 主体 + 单独 image 分段两段发送）
+  // [v10.3 修复] cloudSend 不再因 _sb 为 null 而直接返回——EdgeOne 页面如果没配 anon key，
+  // _sb 是 null，但"立即发送"仍要能工作（no-cors 直发不依赖云端）。
+  // 只有"走 Edge Function 拿真回执"才需要 _sb，那条路径用 if(_sb) 保护。
   async function cloudSend(items, testMode){
-    if(!_sb) return { success:false, error:'未连接云端' };
-    // 1) 优先走 Edge Function（拿到真实送达回执 + 图片分段）
-    try{
-      const { data, error } = await _sb.functions.invoke('send-v10', { body:{ items, testMode } });
-      if(!error && data) return data;
-    }catch(e){ /* 降级到 no-cors 直发 */ }
+    // 1) 优先走 Edge Function（拿到真实送达回执 + 图片分段）—— 仅在 _sb 可用时尝试
+    if(_sb){
+      try{
+        const { data, error } = await _sb.functions.invoke('send-v10', { body:{ items, testMode } });
+        if(!error && data) return data;
+      }catch(e){ /* 降级到 no-cors 直发 */ }
+    }
 
     // 2) 降级到 no-cors 直发：浏览器无法读取响应（opaque），但请求会送达企微服务器
     async function postNoCors(webhookUrl, jsonBody){
