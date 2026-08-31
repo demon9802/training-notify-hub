@@ -11,7 +11,7 @@ create table if not exists tn_kv (
   updated_at  timestamptz default now()
 );
 
--- 发送去重锁：保证「本地 Node」与「GitHub Actions」不会重复发送同一条通知
+-- 发送去重锁：保证「本地 Node 手动发送」与「云端函数 send-due-scheduled」不会重复发送同一条通知
 -- id 格式 = projectId:notificationId:audience:type  (type: main | reminder1d | reminder2h)
 create table if not exists tn_sends (
   id          text primary key,
