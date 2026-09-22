@@ -1,569 +1,3 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>培训通知助手 v10</title>
-<!-- 渲染核心：与后端 server.js / 云端 Action 共用的唯一 replaceVars/renderContent 实现。
-     必须由本文件先加载（head，classic script，同步执行），下方内联脚本才拿到 window.RenderCore。 -->
-<!-- 本地内置 supabase-js（UMD，挂 window.supabase），不依赖外部 CDN，避免静态托管白屏 -->
-<script src="/supabase.js"></script>
-<script src="/render-core.js"></script>
-<script src="/md5-lite.min.js"></script>
-<style>
-  :root{
-    --bg:#f5f6f8; --panel:#ffffff; --ink:#1f2329; --sub:#646a73; --line:#e5e6eb;
-    --brand:#3370ff; --brand2:#0052d9; --ok:#00b42a; --warn:#ff7d00; --err:#f53f3f;
-    --soft:#f2f3f5; --radius:10px;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
-  /* 认证未通过前彻底隐藏业务 UI：避免 file:// / 离线模式下"未登录就暴露后台数据" */
-  body.auth-pending > header,
-  body.auth-pending > .layout{display:none!important}
-  body.auth-pending{background:#f5f6f8}
-  body.auth-offline .modal-mask .modal{border-top:4px solid var(--warn)}
-  a{color:var(--brand);text-decoration:none}
-  header{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);padding:10px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-  header h1{font-size:16px;margin:0}
-  .badge{font-size:12px;padding:2px 8px;border-radius:20px;background:var(--soft);color:var(--sub)}
-  .badge.server{background:#e8f3ff;color:var(--brand2)}
-  .save-tip{font-size:12px;color:var(--sub);min-width:120px;text-align:right;white-space:nowrap;margin-left:auto}
-  .breadcrumb{flex:1;min-width:180px;color:var(--sub);font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-  .breadcrumb b{color:var(--ink);font-weight:600}
-  button{font-family:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:8px;font-size:13px}
-  button:hover{border-color:var(--brand)}
-  button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
-  button.primary:hover{background:var(--brand2)}
-  button.ghost{background:transparent}
-  button.danger{color:var(--err);border-color:#ffd6d6}
-  .layout{display:flex;max-width:1400px;margin:0 auto;align-items:flex-start;min-height:calc(100vh - 60px)}
-  .sidebar{width:220px;position:sticky;top:50px;max-height:calc(100vh - 60px);overflow:auto;padding:14px 0 14px 14px;flex-shrink:0}
-  .main{flex:1;min-width:0;padding:14px}
-  @media(max-width:900px){.sidebar{display:none}}
-  .nav-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;color:var(--ink);font-size:13px;cursor:pointer;margin-bottom:2px}
-  .nav-item:hover{background:var(--soft)}
-  .nav-item.active{background:#e8f3ff;color:var(--brand2);font-weight:600}
-  .nav-sep{margin:12px 0 6px;font-size:11px;color:var(--sub);text-transform:uppercase;letter-spacing:.5px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:14px}
-  .card h3{margin:0 0 10px;font-size:15px;display:flex;align-items:center;gap:8px}
-  .card h4{margin:14px 0 8px;font-size:13px;color:var(--sub);text-transform:none;letter-spacing:0}
-  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px}
-  label{font-size:12px;color:var(--sub);display:block;margin-bottom:4px}
-  input[type=text],input[type=datetime-local],input[type=date],input[type=time],input[type=search],textarea,select{
-    font-family:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);width:100%
-  }
-  textarea{resize:vertical;min-height:64px;line-height:1.5}
-  .field{flex:1;min-width:160px}
-  .sub{color:var(--sub);font-size:12px}
-  .hint{font-size:11px;color:var(--sub);margin-top:4px;line-height:1.5}
-  .stage{border:1px solid #d2d5de;border-radius:var(--radius);background:#fff;margin-bottom:18px;overflow:hidden;box-shadow:0 1px 3px rgba(31,35,41,.06)}
-  .stage-head{display:flex;align-items:center;gap:8px;padding:14px 16px;background:#eef2ff;border-bottom:1px solid #d6dbe4;border-left:4px solid var(--brand);flex-wrap:nowrap}
-  .stage-head input[type=text]{border:none;background:transparent;padding:0;font-size:15px;font-weight:600;min-width:200px}
-  .stage-head input[type=date]{max-width:140px;border:none;background:transparent;padding:0;font-size:12px;color:var(--sub)}
-  .stage-head button{white-space:nowrap;flex-shrink:0}
-  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
-  .seg button{border:none;border-radius:0;background:transparent;padding:5px 14px;font-size:13px;color:var(--sub);cursor:pointer}
-  .seg button+button{border-left:1px solid var(--line)}
-  .seg button.active{background:var(--brand);color:#fff;font-weight:600}
-  .seg-wrap{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
-  .seg-wrap .seg-label{font-size:12px;color:var(--sub)}
-  .mode-paste-note{font-size:12px;color:var(--sub);background:#f2f3f5;border-radius:6px;padding:8px 10px;margin:6px 0}
-  .copyrec-table{display:flex;flex-direction:column;gap:6px;margin-top:8px}
-  .copyrec-row{display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
-  .cr-stage{font-weight:600;min-width:120px;flex-shrink:0}
-  .cr-aud{color:var(--brand2);min-width:64px;flex-shrink:0}
-  .cr-preview{color:var(--sub);font-size:12px;line-height:1.5;white-space:pre-wrap;flex:1}
-  .copyrec-unclear{display:flex;flex-direction:column;gap:6px;margin-top:8px}
-  .cr-unclear-item{font-size:12px;color:var(--sub);background:#fffbe8;border:1px solid #ffe7a3;border-radius:8px;padding:8px 10px;white-space:pre-wrap;line-height:1.5}
-  .cr-unclear-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
-  .cr-unclear-head select{font-size:12px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);width:auto;min-width:100px}
-  .cr-unclear-head .cr-notif-sel{max-width:130px}
-  .copyrec-row select{width:auto;min-width:100px;max-width:130px}
-  .cr-unclear-body{white-space:pre-wrap;max-height:140px;overflow:auto;line-height:1.6}
-  .identify-block{margin-bottom:8px}
-  [hidden]{display:none !important}
-  .stage-body{padding:14px}
-  .stage.collapsed .stage-body{display:none}
-  .stage.collapsed .stage-head{border-bottom:none}
-  .task{border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px;background:#fff;box-shadow:0 1px 3px rgba(31,35,41,.05)}
-  .task-head{display:flex;align-items:center;gap:8px;cursor:pointer}
-  .task-head input[type=text]{border:none;background:transparent;padding:0;font-weight:600;min-width:160px;flex:1}
-  .task-meta-row{display:flex;align-items:center;gap:12px;margin-top:8px;padding-left:30px}
-  .task-meta-row label{font-size:12px;color:var(--sub);margin:0;white-space:nowrap}
-  .task-meta-row input[type=date]{max-width:140px;padding:4px 8px;font-size:12px}
-  .task-body{margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)}
-  .task.collapsed .task-body{display:none}
-  .notif-settings-block{border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:8px;padding:14px;background:#fafbfc;margin-bottom:14px}
-  .notif-settings-block .section-title{margin-top:0}
-  .notif{border:1px solid #e5e6eb;border-left:3px solid #b3d1ff;border-radius:8px;padding:12px;margin-bottom:10px;background:#fff}
-  .notif-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap}
-  .notif-head input[type=text]{border:none;border-bottom:1px solid var(--line);background:transparent;font-size:13px;font-weight:600;color:var(--sub);min-width:200px;flex:1;padding:2px 0}
-  .notif-head input[type=text]:focus{outline:none;border-color:var(--brand);color:var(--ink)}
-  .notif-head .notif-actions{margin-left:auto;display:flex;gap:6px;align-items:center}
-  .notif-body{}
-  .notif.collapsed .notif-body{display:none}
-  .stage-info-block{border:1px solid var(--line);border-left:3px solid #8c6aee;border-radius:8px;padding:14px;background:#fafbfc;margin-bottom:14px}
-  .stage-info-block .section-title{margin-top:0}
-  .stage-head .dates{color:var(--sub);font-size:12px;white-space:nowrap}
-  .tabs{display:flex;gap:6px;margin:8px 0;flex-wrap:wrap}
-  .tab{padding:4px 12px;border:1px solid var(--line);border-radius:20px;font-size:12px;background:#fff;cursor:pointer;white-space:nowrap}
-  .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
-  .tab .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-left:6px;vertical-align:middle}
-  .aud-panel{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fafbfc;overflow:visible}
-  .notif{overflow:visible}
-  .group-pick{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
-  .chk{display:flex;align-items:center;gap:4px;font-size:12px;background:#fff;border:1px solid var(--line);padding:3px 8px;border-radius:6px;cursor:pointer}
-  .chk input{cursor:pointer}
-  .pill{font-size:11px;padding:1px 7px;border-radius:10px;background:var(--soft);color:var(--sub);white-space:nowrap}
-  .pill.student{background:#e8f3ff;color:var(--brand2)}
-  .pill.lecturer{background:#fff3e8;color:#d25f00}
-  .pill.manager{background:#e8fff0;color:#00875a}
-  .pill.test{background:#f5e8ff;color:#7a2eb8}
-  .pill.sent{background:#e8fff0;color:var(--ok)}
-  .pill.failed{background:#ffece8;color:var(--err)}
-  .pill.draft{background:var(--soft);color:var(--sub)}
-  .pill.paused{background:#fff3e0;color:#9a4f00}
-  .pill.today{background:#fff3e8;color:#d25f00}
-  .pill.soon{background:#e8f3ff;color:var(--brand2)}
-  .countdown{font-weight:600;white-space:nowrap}
-  .countdown.urgent{color:var(--err)}
-  .bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 12px;padding:10px 12px;background:#f6f8fb;border:1px solid var(--line);border-radius:8px}
-  .bulkbar .bulkcount{font-size:13px;color:var(--sub);margin-right:auto}
-  .bulkbar button{font-size:12px;padding:5px 10px}
-  .ov-checkbox{width:18px;height:18px;cursor:pointer}
-  .ov-row td,.ov-row th{vertical-align:middle}
-  .ov-row.selected{background:#f0f6ff}
-  /* [v10.7] 推送概览视觉优化（仅作用于推送概览模块，不动全局配色）：
-     - 分组标题改为蓝色色块条：待发送=蓝底蓝字+品牌色色条；已发送=中性灰弱化归档感；
-     - 数据行：待发送极浅蓝底(#f7faff)、悬停加深蓝(#e6f0ff)；已发送浅灰、悬停浅灰；
-     - 临近节点 / 推送概览 主卡加蓝色顶边，三块区块更分明；分页按钮蓝色化；空状态轻蓝。 */
-  .ov-upcoming{border-top:3px solid var(--brand)}
-  .ov-main{border-top:3px solid var(--brand)}
-  .ov-main h3::before,.ov-upcoming h3::before{content:"";width:8px;height:8px;border-radius:2px;background:var(--brand);display:inline-block;flex-shrink:0}
-  .ov-group-header td{font-size:12px;font-weight:600;color:var(--brand2);padding:9px 14px 9px 22px;background:#eef4ff;border-top:1px solid #dbe6ff;border-bottom:1px solid #dbe6ff;letter-spacing:.5px;position:relative;white-space:nowrap}
-  .ov-group-header td::before{content:"";position:absolute;left:10px;top:50%;transform:translateY(-50%);width:4px;height:14px;background:var(--brand);border-radius:2px}
-  .ov-group-header.group-sent td{background:#f4f6f9;color:#6b7280;border-color:#e6e9ed}
-  .ov-group-header.group-sent td::before{background:#c0c6cf}
-  .ov-row.group-pending td{background:#f7faff}
-  .ov-row.group-pending:hover td{background:#e6f0ff}
-  .ov-row.group-sent td{background:#fbfcfd;color:#6b7280}
-  .ov-row.group-sent:hover td{background:#f1f3f6}
-  .ov-row.selected td{background:#dbe9ff}
-  .upcoming-row td{background:#f7faff}
-  .upcoming-row:hover td{background:#e6f0ff}
-  /* 分页条：三块独立，按钮蓝色化、禁用态克制 */
-  .ov-pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:10px;font-size:12px;color:var(--sub)}
-  .ov-pager button{font-size:12px;padding:5px 12px;background:#fff;color:var(--brand2);border:1px solid #dbe6ff}
-  .ov-pager button:hover{border-color:var(--brand);background:#eef4ff}
-  .ov-pager button[disabled]{opacity:.5;cursor:not-allowed;background:#fff;color:var(--sub);border-color:var(--line)}
-  .ov-empty{margin:6px 0 2px}
-  .ov-empty .sub{background:#f7faff;border:1px dashed #dbe6ff;border-radius:8px;padding:18px}
-  .drag-over{outline:2px dashed var(--brand);outline-offset:2px;background:#f2f6ff}
-  .actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center}
-  .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:none;align-items:center;justify-content:center;padding:20px}
-  .modal-mask.show{display:flex}
-  .modal{background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:86vh;overflow:auto;padding:18px}
-  .modal.wide{max-width:900px}
-  .modal h3{margin-top:0}
-  .ov-detail-body .kv{display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #f1f1f4;font-size:13px;line-height:1.6}
-  .ov-detail-body .kv>span{width:74px;flex-shrink:0;color:#8a8f99}
-  .ov-detail-body .kv>b{font-weight:600;word-break:break-all;flex:1}
-  .ov-detail-body .preview-box{margin-top:6px;padding:10px;background:#fafafa;border:1px solid #eee;border-radius:8px;white-space:pre-wrap;font-size:13px;line-height:1.7;max-height:210px;overflow:auto;font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
-  .wx-preview{border:1px solid var(--line);border-radius:8px;background:#f3f4f6;padding:14px}
-  .wx-msg{background:#fff;border-radius:6px;padding:12px;max-width:420px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
-  .wx-msg .wx-name{font-size:12px;color:#576b95;margin-bottom:6px}
-  .wx-msg .wx-body{font-size:14px;line-height:1.7;word-break:break-word;white-space:pre-wrap}
-  .wx-msg .wx-body img{max-width:100%;border-radius:6px;margin:6px 0;display:block}
-  .wx-msg .wx-body a{color:#576b95}
-  .wx-msg .wx-body strong{font-weight:700}
-  /* [v10.5 图文混排] news 单 article 预览（对齐企微实际呈现：大图占顶 + 标题 + 多行描述） */
-  .news-card{background:#fff;border-radius:8px;overflow:hidden;max-width:480px;border:1px solid #e5e7eb;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-  .news-card-text{border:1px solid #e5e7eb}
-  .news-card-text .news-body{padding:12px 14px;font-size:14px;line-height:1.7;color:#1f2329;white-space:pre-wrap;word-break:break-word}
-  .news-card-image{width:100%;background:#f3f4f6;display:block;overflow:hidden}
-  .news-card-image img{width:100%;height:auto;display:block;object-fit:cover;max-height:320px}
-  .news-card-title{padding:10px 14px 4px;font-size:15px;font-weight:600;color:#1f2329;line-height:1.4;border-top:1px solid #f0f0f0;margin-top:2px}
-  .news-card-desc{padding:6px 14px 14px;font-size:14px;color:#4b5563;line-height:1.7;word-break:break-word}
-  .news-card-desc a{color:#2563eb;text-decoration:none}
-  /* [v10.4 图文混排] 预览对齐企微按发送顺序聚合的多消息气泡：每段独立气泡 */
-  .wx-body.wx-seg{display:flex;flex-direction:column;gap:8px}
-  /* [v10.4 多消息分段] 预留类名（v10.5 改回 news 单 article 后未使用，但保留以防回归） */
-  .close-x{float:right;cursor:pointer;color:var(--ink);font-size:22px;font-weight:600;width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:8px;transition:background .15s;margin:-6px -6px 0 0}
-  .close-x:hover{background:var(--soft);color:var(--err)}
-  #previewModal{z-index:60}
-  #templateModal{z-index:50}
-  .tpl-modal{display:flex;flex-direction:column;overflow:hidden !important}
-  .tpl-modal .modal-header-sticky{flex-shrink:0;background:#fff;padding-bottom:8px;position:relative;z-index:2}
-  .tpl-modal .modal-scroll-body{flex:1;overflow:auto;padding-right:4px}
-  .tpl-editor-sticky{position:sticky;top:0;background:#fafbfc;z-index:3;padding-top:12px;margin-top:-12px}
-  .empty{color:var(--sub);text-align:center;padding:24px;border:1px dashed var(--line);border-radius:8px}
-  .att-item{border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:6px;background:#fff}
-  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1f2329;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:80;opacity:0;transition:opacity .2s;max-width:480px;text-align:center}
-  .toast.show{opacity:1}
-  /* warn tone：用于「改时间后自动发送已暂停」「模板过期未更新」等高风险提示，
-     顶部黄色横幅 + 较粗字重 + 停留 6s，比普通底部黑框 toast 更显眼。 */
-  .toast-warn{position:fixed;top:80px;left:50%;bottom:auto;transform:translateX(-50%);background:#f59e0b;color:#1f2329;padding:12px 22px;border-radius:8px;font-size:14px;font-weight:600;z-index:80;opacity:0;transition:opacity .25s;box-shadow:0 4px 16px rgba(0,0,0,.18);max-width:560px;width:max-content;text-align:center;pointer-events:none}
-  .toast-warn.show{opacity:1}
-  .proj-card{border:1px solid var(--line);border-radius:var(--radius);padding:14px;background:#fff;margin-bottom:10px;transition:box-shadow .15s}
-  .proj-card:hover{box-shadow:0 2px 8px rgba(0,0,0,.06);border-color:var(--brand)}
-  .proj-card .title{font-size:15px;font-weight:600;margin-bottom:6px}
-  .proj-meta{font-size:12px;color:var(--sub);margin-bottom:6px}
-  .meta-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
-  .tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:10px;background:var(--soft);color:var(--sub);margin-right:4px}
-  .tag.brand{background:#e8f3ff;color:var(--brand2)}
-  .fold-btn{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--line);background:#fff;cursor:pointer;color:var(--sub);font-size:12px}
-  .fold-btn:hover{border-color:var(--brand);color:var(--brand)}
-  .section-title{display:flex;align-items:center;justify-content:space-between;margin:16px 0 8px}
-  .section-title h4{margin:0;font-size:14px;font-weight:600;color:var(--ink)}
-  .search-wrap{position:relative;width:100%}
-  .search-wrap input{padding-left:28px}
-  .search-icon{position:absolute;left:8px;top:50%;transform:translateY(-50%);color:var(--sub);font-size:12px}
-  .mini-btn{font-size:12px;padding:3px 8px}
-  .toolbar{display:flex;gap:8px;flex-wrap:wrap;padding:0 0 12px;align-items:center}
-  .toolbar-right{margin-left:auto;display:flex;gap:8px;align-items:center}
-  .group-row{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:#fff}
-  .group-row .name{flex:1;font-weight:500}
-  .group-row .url{flex:2;color:var(--sub);font-size:12px;word-break:break-all;line-height:1.5}
-  .pinned{background:#fffbe8 !important;border-color:#ffe7a3 !important}
-  .vars{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
-  .vars button{font-size:11px;padding:3px 8px}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left}
-  th{color:var(--sub);font-weight:500;background:var(--soft)}
-  /* 导航树 */
-  .nav-tree{margin-left:8px;border-left:1px dashed var(--line);padding-left:6px}
-  .nav-stage{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;color:var(--ink)}
-  .nav-stage:hover{background:var(--soft)}
-  .nav-stage.active{background:#e8f3ff;color:var(--brand2);font-weight:600}
-  .nav-notif{display:flex;align-items:center;gap:6px;padding:5px 8px 5px 20px;border-radius:6px;font-size:12px;color:var(--sub);cursor:pointer}
-  .nav-notif:hover{background:var(--soft);color:var(--ink)}
-  .nav-notif.active{background:#e8f3ff;color:var(--brand2);font-weight:600}
-  .nav-notif .dot{width:5px;height:5px;border-radius:50%;background:var(--ok);flex-shrink:0}
-  .nav-head{display:flex;align-items:center;justify-content:space-between;margin:6px 0 4px}
-  .nav-head small{color:var(--sub);font-size:11px}
-  .header-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
-  .auth-indicator{font-size:12px;color:#16a34a;background:#dcfce7;border:1px solid #86efac;border-radius:20px;padding:3px 10px;white-space:nowrap}
-  /* 关联群选择 */
-  .assoc-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px;border:1px dashed var(--line);border-radius:8px;background:#fafbfc}
-  .assoc-bar.empty{background:transparent;border-style:dashed}
-  .picker-row{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;background:#fff;cursor:pointer}
-  .picker-row:hover{background:var(--soft)}
-  .picker-row.selected{background:#e8f3ff;border-color:var(--brand)}
-  .tpl-chip{display:inline-block;font-size:11px;padding:1px 6px;border-radius:10px;background:#eef3ff;color:var(--brand2);margin:2px 4px 0 0;font-family:Menlo,Consolas,monospace}
-  .tpl-preview-box{background:#fafbfc;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:12px;line-height:1.55;white-space:pre-wrap;max-height:200px;overflow:auto;color:#333}
-  /* 主页 */
-  .home-search{padding:8px 10px;margin-bottom:8px}
-  .home-search input{padding-left:28px}
-  .home-topbar{display:flex;gap:10px;align-items:center;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
-  .home-topbar .field{margin:0;min-width:120px}
-  .section-empty{color:var(--sub);text-align:center;padding:40px 20px;border:1px dashed var(--line);border-radius:8px}
-  .category-add{color:var(--brand);cursor:pointer;font-size:12px;margin-left:auto}
-  .field-dropdown{position:relative;display:inline-block;z-index:40}
-  .field-dropdown .menu{position:absolute;left:0;bottom:100%;top:auto;margin-bottom:6px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 -4px 14px rgba(0,0,0,.12);min-width:200px;z-index:40;display:none;max-height:240px;overflow:auto;padding:4px 0}
-  .field-dropdown .menu.show{display:block}
-  .field-dropdown .menu-group{padding:4px 10px;font-size:11px;color:var(--sub);background:#fafbfc}
-  .field-dropdown .menu-item{padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
-  .field-dropdown .menu-item:hover{background:#f2f6ff;color:var(--brand2)}
-  .btn-split{position:relative;display:inline-flex;align-items:stretch;border:1px solid var(--line);border-radius:8px;overflow:visible}
-  .btn-split button{border:none;border-radius:0;background:var(--panel);padding:6px 10px;white-space:nowrap}
-  .btn-split button.primary{background:var(--brand);color:#fff}
-  .btn-split button.primary:hover{background:var(--brand2)}
-  .btn-split button:not(:last-child){border-right:1px solid rgba(0,0,0,.08)}
-  .btn-split button:first-child{border-radius:8px 0 0 8px}
-  .btn-split button:last-child{border-radius:0 8px 8px 0}
-  .btn-split .dropdown-menu{position:absolute;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.1);min-width:170px;z-index:10;display:none;padding:4px 0}
-  .btn-split .dropdown-menu.show{display:block}
-  .btn-split .dropdown-item{padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
-  .btn-split .dropdown-item:hover{background:#f2f6ff;color:var(--brand2)}
-</style>
-</head>
-<body class="auth-pending">
-<!-- 登录遮罩：共享访问密码（同级运营人共用同一密码；各浏览器独立登录、互不顶号） -->
-<div class="modal-mask" id="authMask">
-  <div class="modal" style="max-width:360px;text-align:center">
-    <h3>登录</h3>
-    <p class="sub">培训通知助手 · 请输入共享访问密码</p>
-    <input type="password" id="authPwd" placeholder="访问密码" style="width:100%;padding:9px;margin:12px 0;box-sizing:border-box;border:1px solid #d0d5dd;border-radius:6px">
-    <div id="authErr" style="color:#e5484d;font-size:13px;min-height:18px;margin-bottom:6px"></div>
-    <button class="primary" id="authSubmit" style="width:100%;padding:10px">进入</button>
-    <p class="sub" style="margin-top:10px;font-size:12px">未配置服务端密码时本地调试免登录</p>
-  </div>
-</div>
-<header>
-  <h1>培训通知助手</h1>
-  <div class="breadcrumb" id="breadcrumb">项目列表</div>
-  <div class="header-actions" id="headerActions"></div>
-  <span class="save-tip" id="saveTip"></span>
-</header>
-<div class="layout">
-  <aside class="sidebar" id="sidebar"></aside>
-  <main class="main" id="app"><div class="empty">加载中…</div></main>
-</div>
-
-<!-- 群通讯录弹窗 -->
-<div class="modal-mask" id="groupsModal">
-  <div class="modal wide">
-    <span class="close-x" data-close="groupsModal">×</span>
-    <h3>群通讯录（全局）</h3>
-    <div class="card" style="margin:10px 0;background:#fafbfc">
-      <h4>运营人提醒群（节点提醒推送通道）</h4>
-      <p class="hint">提前1天与发送前2小时，系统会向该群推送「节点确认」与「测试版通知」。可留空：留空时仅页面内「推送概览 → 临近节点」看板生效，不发企微消息。建议建一个仅含你与领导的群后填入 webhook。</p>
-      <div class="row">
-        <div class="field" style="flex:1;min-width:280px"><label>提醒群 Webhook URL</label><input type="text" id="reminderWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div>
-        <button class="primary" id="btnSaveReminder" style="margin-bottom:8px">保存</button>
-      </div>
-      <div id="reminderStatus" class="sub"></div>
-    </div>
-    <div class="row">
-      <div class="field search-wrap"><span class="search-icon">🔍</span><input type="search" id="gSearch" placeholder="搜索群名称 / Webhook"></div>
-      <div class="field" style="max-width:140px"><select id="gFilter"><option value="">全部类型</option><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select></div>
-    </div>
-    <div id="groupsList" style="margin:10px 0"></div>
-    <div class="card" style="margin:10px 0;background:#fafbfc">
-      <h4>添加群</h4>
-      <div class="row">
-        <div class="field"><label>群名称</label><input type="text" id="gName" placeholder="如：A+经理人学员群"></div>
-        <div class="field" style="max-width:160px"><label>类型</label>
-          <select id="gType"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select>
-        </div>
-        <div class="field"><label>Webhook URL</label><input type="text" id="gUrl" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div>
-        <button class="primary" id="btnAddGroup" style="margin-bottom:8px">添加</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- 编辑群弹窗（嵌套于群通讯录） -->
-<div class="modal-mask" id="editGroupModal">
-  <div class="modal">
-    <span class="close-x" data-close="editGroupModal">×</span>
-    <h3>编辑群</h3>
-    <div class="row">
-      <div class="field" style="flex:1;min-width:240px"><label>群名称</label><input type="text" id="egName"></div>
-      <div class="field" style="max-width:140px"><label>类型</label>
-        <select id="egType"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select>
-      </div>
-    </div>
-    <div class="field" style="margin:8px 0"><label>Webhook URL（可点击右侧复制完整链接验证）</label>
-      <div class="row" style="gap:6px">
-        <input type="text" id="egUrl" style="flex:1">
-        <button class="ghost mini-btn" id="egCopy" type="button">复制</button>
-      </div>
-    </div>
-    <div class="actions" style="justify-content:flex-end;margin-top:14px">
-      <button class="ghost" data-close="editGroupModal">取消</button>
-      <button class="primary" id="btnSaveEditGroup">保存</button>
-    </div>
-  </div>
-</div>
-
-<!-- 关联群选择弹窗 -->
-<div class="modal-mask" id="assocPickerModal">
-  <div class="modal wide">
-    <span class="close-x" data-close="assocPickerModal">×</span>
-    <h3>选择项目关联群</h3>
-    <p class="sub">从全局通讯录中选择本项目常用的群，写通知时只显示这些群。</p>
-    <div class="row">
-      <div class="field search-wrap"><span class="search-icon">🔍</span><input type="search" id="assocPickerSearch" placeholder="搜索群名称"></div>
-      <div class="field" style="max-width:140px"><select id="assocPickerFilter"><option value="">全部类型</option><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option><option value="test">测试群</option></select></div>
-    </div>
-    <div id="assocPickerList" style="margin:10px 0;max-height:360px;overflow:auto"></div>
-    <div class="actions" style="justify-content:flex-end">
-      <button class="ghost" data-close="assocPickerModal">取消</button>
-      <button class="primary" id="btnConfirmAssoc">确定</button>
-    </div>
-  </div>
-</div>
-
-<!-- 预览弹窗 -->
-<div class="modal-mask" id="previewModal">
-  <div class="modal">
-    <span class="close-x" data-close="previewModal">×</span>
-    <h3 id="previewTitle">发送预览</h3>
-    <div class="wx-preview" id="previewBody"></div>
-  </div>
-</div>
-
-<!-- 测试发送弹窗 -->
-<div class="modal-mask" id="testSendModal">
-  <div class="modal">
-    <span class="close-x" data-close="testSendModal">×</span>
-    <h3 id="testSendModalTitle">发送至测试群</h3>
-    <p class="sub">选择测试群，将当前受众版本的文案发送到测试群（自动加【测试】前缀）。</p>
-    <div id="testGroupList" style="margin:10px 0"></div>
-    <div class="actions" style="justify-content:flex-end">
-      <button class="ghost" data-close="testSendModal">取消</button>
-      <button class="primary" id="btnDoTestSend">发送</button>
-    </div>
-  </div>
-</div>
-
-<!-- 分类管理弹窗 -->
-<div class="modal-mask" id="categoryModal">
-  <div class="modal">
-    <span class="close-x" data-close="categoryModal">×</span>
-    <h3>管理分类</h3>
-    <p class="sub">可新增分类，或删除未使用的分类。</p>
-    <div id="categoryList" style="margin:10px 0"></div>
-    <div class="row">
-      <div class="field"><input type="text" id="newCategoryName" placeholder="新分类名称"></div>
-      <button class="primary" id="btnAddCategory">添加</button>
-    </div>
-  </div>
-</div>
-
-<!-- 文案模板管理弹窗 -->
-<div class="modal-mask" id="templateModal">
-  <div class="modal wide tpl-modal">
-    <div class="modal-header-sticky">
-      <span class="close-x" data-close="templateModal">×</span>
-      <h3>文案模板管理</h3>
-      <p class="sub">按「通知节点 + 群类别」管理默认文案。在此处更新的模板会立即在通知编辑区生效；已使用旧模板的通知会显示黄字提醒。</p>
-      <div class="row">
-        <div class="field" style="max-width:160px"><label>节点筛选</label><select id="tplFilterNode"><option value="">全部节点</option><option value="start">启动通知</option><option value="midway">中程提醒</option><option value="due">截止提醒</option><option value="post">截止后通晒</option></select></div>
-        <div class="field" style="max-width:140px"><label>群类别筛选</label><select id="tplFilterAud"><option value="">全部类别</option><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option></select></div>
-        <div class="field" style="max-width:220px"><label>搜索</label><input type="search" id="tplSearch" placeholder="模板名称 / 内容"></div>
-        <button class="primary" id="btnNewTemplate" style="margin-bottom:8px">新建模板</button>
-      </div>
-    </div>
-    <div class="modal-scroll-body">
-      <div id="templateList" style="margin:10px 0"></div>
-      <div class="card" id="tplEditor" style="display:none;margin:10px 0;background:#fafbfc">
-        <div class="tpl-editor-sticky">
-          <h4 id="tplEditorTitle">新建模板</h4>
-          <div class="row">
-            <div class="field"><label>模板名称</label><input type="text" id="tplLabel" placeholder="如：学习阶段启动通知（学员群）"></div>
-            <div class="field" style="max-width:160px"><label>通知节点</label><select id="tplNode"><option value="start">启动通知</option><option value="midway">中程提醒</option><option value="due">截止提醒</option><option value="post">截止后通晒</option></select></div>
-            <div class="field" style="max-width:140px"><label>群类别</label><select id="tplAudience"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option></select></div>
-          </div>
-          <div class="field"><label>模板内容</label>
-            <div style="display:flex;gap:6px;margin:4px 0;align-items:center">
-              <div class="field-dropdown" id="tplFieldDropdown">
-                <button class="ghost mini-btn" type="button">插入字段 ▼</button>
-                <div class="menu" id="tplFieldMenu">
-                  <div class="menu-group">项目信息</div>
-                  <div class="menu-item tpl-var" data-var="{{项目名}}">项目名 <code style="color:var(--sub)">{{项目名}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{负责人}}">负责人 <code style="color:var(--sub)">{{负责人}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{培训目的}}">培训目的 <code style="color:var(--sub)">{{培训目的}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{整体安排}}">整体安排 <code style="color:var(--sub)">{{整体安排}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{项目开始}}">项目开始 <code style="color:var(--sub)">{{项目开始}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{项目结束}}">项目结束 <code style="color:var(--sub)">{{项目结束}}</code></div>
-                  <div class="menu-group">阶段信息</div>
-                  <div class="menu-item tpl-var" data-var="{{阶段名}}">阶段名 <code style="color:var(--sub)">{{阶段名}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{阶段开始时间}}">阶段开始时间 <code style="color:var(--sub)">{{阶段开始时间}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{阶段结束时间}}">阶段结束时间 <code style="color:var(--sub)">{{阶段结束时间}}</code></div>
-                  <div class="menu-item tpl-var" data-var="{{地点/链接}}">地点/链接 <code style="color:var(--sub)">{{地点/链接}}</code></div>
-                  <div class="menu-group">任务信息</div>
-                  <div class="menu-item tpl-var" data-var="{{任务列表}}">任务列表 <code style="color:var(--sub)">{{任务列表}}</code></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <textarea id="tplContent" rows="8" placeholder="在此编写模板文案，支持 markdown_v2 与上方动态字段"></textarea>
-        <div class="actions">
-          <button class="ghost" id="btnTplPreview">预览</button>
-          <button class="primary" id="btnTplSave">保存模板</button>
-          <button class="ghost" id="btnTplCancel">取消</button>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- 模板选择弹窗 -->
-<div class="modal-mask" id="templatePickerModal">
-  <div class="modal">
-    <span class="close-x" data-close="templatePickerModal">×</span>
-    <h3>选择要应用的模板</h3>
-    <div class="row" style="align-items:flex-end;margin:10px 0">
-      <div class="field" style="max-width:160px"><label>通知节点</label>
-        <select id="tplPickNode"><option value="start">启动通知</option><option value="midway">中程提醒</option><option value="due">截止提醒</option><option value="post">截止后通晒</option></select>
-      </div>
-      <div class="field" style="max-width:140px"><label>群类别</label>
-        <select id="tplPickAud"><option value="student">学员群</option><option value="lecturer">讲师群</option><option value="manager">管理群</option></select>
-      </div>
-    </div>
-    <p class="sub">默认展示当前通知节点和群类别，可切换筛选；应用后会将通知节点更新为模板所属节点。</p>
-    <div id="templatePickerList" style="margin:10px 0"></div>
-  </div>
-</div>
-
-<!-- 批量改时间弹窗 -->
-<div class="modal-mask" id="bulkTimeModal">
-  <div class="modal">
-    <span class="close-x" data-close="bulkTimeModal">×</span>
-    <h3>批量修改发送时间</h3>
-    <p class="sub" id="bulkTimeSub">已选 0 条受众通知</p>
-    <div style="margin:12px 0">
-      <label style="display:flex;align-items:center;gap:8px;margin:6px 0;cursor:pointer"><input type="radio" name="bulkTimeMode" value="offset" checked> 相对偏移</label>
-      <div class="row" style="margin-left:22px;align-items:flex-end">
-        <div class="field" style="max-width:90px"><input type="number" id="bulkTimeOffset" value="0" step="1"></div>
-        <div class="field" style="max-width:90px"><select id="bulkTimeUnit"><option value="day">天</option><option value="hour">小时</option><option value="minute">分钟</option></select></div>
-        <span class="sub">正数=延后，负数=提前</span>
-      </div>
-      <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer"><input type="radio" name="bulkTimeMode" value="absolute"> 统一设为绝对时间</label>
-      <div class="row" style="margin-left:22px;align-items:flex-end">
-        <div class="field" style="max-width:180px"><input type="datetime-local" id="bulkTimeAbsolute"></div>
-      </div>
-    </div>
-    <p class="sub" id="bulkTimePreview">将影响 0 条已设时间的通知</p>
-    <div class="actions" style="justify-content:flex-end">
-      <button class="ghost" data-close="bulkTimeModal">取消</button>
-      <button class="primary" id="btnBulkTimeApply">应用</button>
-    </div>
-  </div>
-</div>
-
-<!-- 批量生成通知弹窗 -->
-<div class="modal-mask" id="bulkGenerateModal">
-  <div class="modal wide">
-    <span class="close-x" data-close="bulkGenerateModal">×</span>
-    <h3>批量生成阶段通知</h3>
-    <p class="sub">为选中的每个阶段生成一条通知，适合新项目快速建通知或滚动班级批量套模板。</p>
-    <div class="row" style="align-items:flex-start;gap:16px;margin:12px 0">
-      <div class="field" style="flex:1">
-        <label>目标阶段（可多选）</label>
-        <p class="hint">将依次为勾选阶段各生成 1 条通知</p>
-        <div id="bulkGenStages" style="max-height:160px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px;background:#fff"></div>
-      </div>
-      <div style="flex:1">
-        <div class="field" style="margin-bottom:10px">
-          <label>生成来源</label>
-          <select id="bulkGenSource"><option value="template">按文案模板</option><option value="copy">复制现有通知</option></select>
-        </div>
-        <div id="bulkGenSourceBox">
-          <div class="field" id="bulkGenTplBox">
-            <label>选择模板</label>
-            <select id="bulkGenTemplate"></select>
-            <p class="hint">将只启用该模板对应的受众群，其他受众保持停用</p>
-          </div>
-          <div class="field" id="bulkGenCopyBox" style="display:none">
-            <label>复制来源</label>
-            <select id="bulkGenCopyFrom"></select>
-            <p class="hint">复制该通知的文案、节点与受众设置</p>
-          </div>
-        </div>
-        <div class="field" style="margin-top:10px">
-          <label>发送时间规则</label>
-          <select id="bulkGenTimeRule"><option value="none">不设定</option><option value="beforeStart">阶段开始前</option><option value="afterStart">阶段开始后</option><option value="beforeEnd">阶段结束前</option><option value="afterEnd">阶段结束后</option></select>
-        </div>
-        <div class="row" id="bulkGenOffsetRow" style="align-items:flex-end;margin-top:8px;display:none">
-          <div class="field" style="max-width:90px"><input type="number" id="bulkGenOffset" value="1" min="0" step="1"></div>
-          <div class="field" style="max-width:90px"><select id="bulkGenUnit"><option value="day">天</option><option value="hour">小时</option></select></div>
-          <span class="sub">偏移量</span>
-        </div>
-      </div>
-    </div>
-    <div class="actions" style="justify-content:flex-end;margin-top:16px">
-      <button class="ghost" data-close="bulkGenerateModal">取消</button>
-      <button class="primary" id="btnBulkGenApply">生成</button>
-    </div>
-  </div>
-</div>
-
-<script>
 (function(){
   "use strict";
   const SERVER_MODE = location.protocol !== 'file:' && (location.port === '8788' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
@@ -626,8 +60,9 @@
   //   再下次 render() 用新 project 重建文本框时，这些编辑就凭空消失了（表现为"部分保存 / 页面刷新后新内容没了"）。
   //   原地修改 local 后，project 引用保持不变，DOM 绑定始终有效，编辑不会再丢。
   function mergeCloudAuthorityFields(local, cloud){
-    if(!cloud || typeof cloud !== 'object' || Array.isArray(cloud)) return local;
-    if(!local || !local.stages) return local;
+    if(!cloud || typeof cloud !== 'object' || Array.isArray(cloud)) return {local, dirty:false};
+    if(!local || !local.stages) return {local, dirty:false};
+    let dirty = false;
     const cloudStages = (cloud.stages||[]);
     local.stages.forEach((s)=>{
       const cs = cloudStages.find(x=>x && x.id && s && s.id && x.id===s.id);
@@ -635,32 +70,77 @@
       s.notifications.forEach((n)=>{
         const cn = (cs.notifications||[]).find(x=>x && x.id && n && n.id && x.id===n.id);
         if(!cn) return;
-        // [v10.2 root-fix] 关键："云端真源优先"的正确语义是「本地缺失/被显式清空时」才用云端补，
-        // 不是「云端有就覆盖本地」——否则 notifyAt change handler 刚把 n.sentAt=null 清空，
-        // 下一秒 silentSave → fetchCloudMerge 又把云端旧 sentAt 写回，导致改时间失效、临近节点不进。
-        // 仅当本地字段为 falsy(null/undefined/空数组) 时才用云端值补：
-        //   附加：n.status==='paused' 表示用户主动重置发送（notifyAt change 路径），云端旧 sentAt 必须不复活
-        if(cn.sentAt && !n.sentAt && n.status !== 'paused') n.sentAt = cn.sentAt;
-        if(Array.isArray(cn.sentAudiences) && cn.sentAudiences.length && (!Array.isArray(n.sentAudiences) || n.sentAudiences.length===0) && n.status !== 'paused'){
-          n.sentAudiences = Array.from(new Set(cn.sentAudiences));
+        // [v10.7.12] 关键：云端显式重置（sentAt=null / sentAudiences=[] / status=null）时，
+        //   本地内存必须跟随清空。否则本地陈旧的 sentAt 会在 silentSave 时反向写回云端，
+        //   形成「管理员/改时间清空云端 → 浏览器下一秒又写回旧值 → 云端再次变脏」的死循环
+        //   （用户 9-10 19:24/19:29/19:36 三次实证：PATCH 清空后 3 分钟内必被浏览器写回）。
+        //   严格用 === null / length===0 判断，避免"云端字段不存在(undefined)"被误判为重置。
+        if(cn.sentAt === null && n.sentAt){ n.sentAt = null; dirty = true; }
+        if(Array.isArray(cn.sentAudiences) && cn.sentAudiences.length===0 && Array.isArray(n.sentAudiences) && n.sentAudiences.length>0){
+          n.sentAudiences = []; dirty = true;
         }
-        if(cn.reminder1dSentAt && !n.reminder1dSentAt && n.status !== 'paused') n.reminder1dSentAt = cn.reminder1dSentAt;
-        if(cn.reminder2hSentAt && !n.reminder2hSentAt && n.status !== 'paused') n.reminder2hSentAt = cn.reminder2hSentAt;
-        // status: 只在本地是"未明确"的非 sent 状态、且云端是 sent 时才覆盖
-        if(cn.status === 'sent' && n.status !== 'sent' && n.status !== 'paused'){
-          n.status = 'sent';
+        if(cn.status === null && n.status){ n.status = null; dirty = true; }
+        // [v10.7.17] 同步 _resetAt：云端重置时间戳必须被本地继承。
+        //   否则多标签页/刷新后 n._resetAt 丢失，旧 sentAt/sentAudiences 会被复活。
+        if(cn._resetAt && (!n._resetAt || cn._resetAt > n._resetAt)){
+          n._resetAt = cn._resetAt;
+        }
+        // [v10.7.18] notifyAt 兜底保护：真实发送后的 sentAt 必然 >= 对应受众 notifyAt；
+        //   若云端 sentAt 早于当前 notifyAt 超过 1h，说明是旧记录（改时间后旧值残留）。
+        //   此判断不依赖 _resetAt，可防止旧版本标签页把 _resetAt 覆盖掉后旧状态复活。
+        const cnSentTs = cn.sentAt ? (new Date(cn.sentAt).getTime() || 0) : 0;
+        const enabledNotifyAts = ['student','lecturer','manager']
+          .map(aud => cn.audienceContent && cn.audienceContent[aud] && cn.audienceContent[aud].enabled ? cn.audienceContent[aud].notifyAt : null)
+          .filter(Boolean);
+        const minNotifyAtMs = enabledNotifyAts.length ? Math.min(...enabledNotifyAts.map(t => (new Date(t).getTime() || Infinity))) : 0;
+        // [v10.7.18] 用 < 而非 <=：真实发送后的 sentAt 必然 >= notifyAt；
+        //   只要云端 sentAt 早于当前 notifyAt，就视为旧记录并清空，避免改时间后旧状态复活。
+        const isOldByNotifyAt = minNotifyAtMs > 0 && cnSentTs > 0 && cnSentTs < minNotifyAtMs;
+        // [v10.7.14/17/18] _resetAt + notifyAt 双保护：用户刚改时间重置过，pollOverview/silentSave 拉云端时
+        //   可能遇到旧 sentAt，必须拒绝复活；scheduler 真实发送后的新 sentAt 必然晚于 _resetAt / notifyAt，届时正常复活。
+        const resetAt = n._resetAt || 0;
+        const isOldCloudSent = isOldByNotifyAt || (resetAt > 0 && (
+          (cnSentTs > 0 && cnSentTs <= resetAt)
+          || (cnSentTs === 0 && Array.isArray(cn.sentAudiences) && cn.sentAudiences.length > 0)
+          || (cnSentTs === 0 && cn.status === 'sent')
+        ));
+        if(isOldCloudSent){
+          // [v10.7.17/18] 云端是旧记录，本地必须清空这些权威字段。
+          //   否则多标签页/旧页面会保留旧状态并写回云端，导致推送概览显示错乱、临近节点消失。
+          if(n.sentAt){ n.sentAt = null; dirty = true; }
+          if(Array.isArray(n.sentAudiences) && n.sentAudiences.length>0){ n.sentAudiences = []; dirty = true; }
+          if(n.status === 'sent'){ n.status = null; dirty = true; }
+          if(n.reminder1dSentAt){ n.reminder1dSentAt = null; dirty = true; }
+          if(n.reminder2hSentAt){ n.reminder2hSentAt = null; dirty = true; }
+        } else {
+          // [v10.7.11] 强化语义：仅在「本地字段 falsy」时用云端补；本地有值不覆盖
+          //   （保留 v10.2 root-fix 的"避免本地刚清空就被云端旧值复活"语义）。
+          if(cn.sentAt && !n.sentAt) n.sentAt = cn.sentAt;
+          if(Array.isArray(cn.sentAudiences) && cn.sentAudiences.length && (!Array.isArray(n.sentAudiences) || n.sentAudiences.length===0)){
+            n.sentAudiences = Array.from(new Set(cn.sentAudiences));
+          }
+          if(cn.reminder1dSentAt && !n.reminder1dSentAt) n.reminder1dSentAt = cn.reminder1dSentAt;
+          if(cn.reminder2hSentAt && !n.reminder2hSentAt) n.reminder2hSentAt = cn.reminder2hSentAt;
+          // status: 云端是 sent 且本地不是 sent 时覆盖（含 paused → sent 的恢复）
+          if(cn.status === 'sent' && n.status !== 'sent'){
+            n.status = 'sent';
+          }
+          // 新的真实发送已发生，清除重置标记
+          if(resetAt > 0 && cnSentTs > resetAt){
+            delete n._resetAt;
+          }
         }
       });
     });
-    return local;
+    return {local, dirty};
   }
   // silentSave 调用前的"取最新云端" — 以云端真源保护关键字段不丢
   async function fetchCloudMerge(local){
-    if(!_sb || !currentProjectId) return local;
+    if(!_sb || !currentProjectId) return {local, dirty:false};
     try{
       const cloud = await cloudGet('project:'+currentProjectId);
       return mergeCloudAuthorityFields(local, cloud);
-    }catch(e){ return local; }
+    }catch(e){ return {local, dirty:false}; }
   }
   // 轻量 MD5 包装：复用 js-md5 全局（<script src="md5-lite.min.js"> 在 head 引入）。
   // 浏览器 SubtleCrypto 不支持 MD5，必须走这个。接受 string 或 Uint8Array，返回 hex。
@@ -933,14 +413,27 @@
   const UPCOMING_PAGE_SIZE = 5;
   const PENDING_PAGE_SIZE = 10;
   const SENT_PAGE_SIZE = 5;
+  const DRAFT_PAGE_SIZE = 5;   // [v10.7.9] 原 EXPIRED_PAGE_SIZE 改名为草稿箱分页
   let upcomingPage = 1;
   let pendingPage = 1;
   let sentPage = 1;
+  let draftPage = 1;          // [v10.7.9] 原 expiredPage 改名为草稿箱分页
 
   const $ = (s,el=document)=>el.querySelector(s);
   const $$ = (s,el=document)=>Array.from(el.querySelectorAll(s));
   const uid = ()=> 'id'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
   const esc = (s)=> (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  // [v10.7.6 关键] 解析 notifyAt（前端 datetime-local 保存的无时区字符串）：
+  //   JS Date 对 ISO 8601 "YYYY-MM-DDTHH:MM" 默认按 UTC 解析，但 UI 期望的是「本地时间（+08:00）」。
+  //   无时区时强制按 +08:00 解析，与 send-due-scheduled 同步；带时区（Z/+HH:MM）按原样解析。
+  function parseNotifyAtBeijing(s){
+    if (!s) return NaN;
+    const str = String(s).trim();
+    if (/[Zz]$|[+\-]\d{2}:?\d{2}$/.test(str)) return new Date(str).getTime();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return new Date(str + 'T00:00:00+08:00').getTime();
+    return new Date(str + '+08:00').getTime();
+  }
 
   // ---------- 数据 ----------
   function emptyProject(){
@@ -1159,6 +652,16 @@
       }
     }
   }
+  // 焦点保护：当前焦点在可编辑表单（textarea / 文本类 input）内时返回 true。
+  // 用于自动保存/轮询/定时发送等"后台任务"判断：用户正在打字就不重建 DOM、不触发发送，
+  // 避免 12s 轮询刷新掉文本框、或自动保存/发送扫描打断输入（表现为"页面刷新/断点"）。
+  function isEditingForm(){
+    const ae = document.activeElement;
+    return !!(ae && (
+      ae.tagName === 'TEXTAREA'
+      || (ae.tagName === 'INPUT' && !['button','submit','checkbox','radio','file','hidden'].includes(ae.type))
+    ));
+  }
   function scheduleAutoSave(){
     const tip = $('#saveTip');
     if(tip) tip.textContent = '编辑中…';
@@ -1189,22 +692,25 @@
     // 同时传 force:true 让 clientSendDue 立即扫一遍 30min 内的待发节点——
     // 用户改完时间 → silentSave → force 扫描 → 立即生效（如果通知距 now 在 30min 内）。
     const triggerInstantOverviewRefresh = ()=>{
+      // 仅刷新「推送概览」展示数据（状态/实际发送列）。
+      // 注意：绝不在此触发发送扫描。发送扫描属于「notifyAt change 事件」(见 1747 行) 与
+      // 60s 定时器(send-due) 的职责；若放进自动保存，用户每敲一个字停顿 600ms 都会跑一次
+      // DB 写/发送逻辑，既打断正在输入的文本框，又可能在用户还在写正文时就把通知发出去。
       queueMicrotask(()=>{
         try{
           if(typeof pollOverview==='function') pollOverview();
-          if(typeof clientSendDue==='function') clientSendDue({force:true});
         }catch(e){}
       });
     };
     if(SERVER_MODE){
       try{
         // 写前先拉服务端权威字段（scheduler 也会写 sentAt/sentAudiences），merge 后再写
-        let merged = project;
+        let {local: merged, dirty} = {local: project, dirty: false};
         try{
           const rr = await fetch('/api/project/'+currentProjectId);
           if(rr.ok){
             const jj = await rr.json();
-            if(jj.project) merged = mergeCloudAuthorityFields(project, jj.project);
+            if(jj.project) ({local: merged, dirty} = mergeCloudAuthorityFields(project, jj.project));
           }
         }catch(e){}
         await fetch('/api/project/'+currentProjectId, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(merged)});
@@ -1225,8 +731,13 @@
       // 写云端前先拉一次最新 cloud，用 mergeCloudAuthorityFields 把 Action/scheduler 写的
       // sentAt/sentAudiences/reminder1dSentAt/reminder2hSentAt/sent 状态保留下来——避免前端
       // silentSave 把内存 stale project 写到云端、覆盖掉 scheduler/Action 的最新写入。
-      let merged = project;
-      try{ merged = await fetchCloudMerge(project); }catch(e){}
+      let {local: merged, dirty} = {local: project, dirty: false};
+      try{ ({local: merged, dirty} = await fetchCloudMerge(project)); }catch(e){}
+      // [v10.7.18] 若 merge 识别出旧记录并清空本地，必须立即写回云端，防止旧版本标签页
+      // 反复把旧状态污染到云端；否则 pollOverview 只能清空本地内存，云端仍脏，UI 会持续闪烁。
+      if(dirty){
+        merged.updatedAt = new Date().toISOString();
+      }
       await cloudSet('project:'+currentProjectId, merged);
       // 把 merged 同步回内存，保证后续编辑/渲染不再丢失云端权威字段
       try{
@@ -1286,6 +797,11 @@
     n.reminder1dSentAt = null;
     n.reminder2hSentAt = null;
     n.status = 'paused';
+    // [v10.7.14 root-fix] 给通知打"重置时间戳"：
+    //   mergeCloudAuthorityFields/pollOverview 会周期性把云端旧 sentAt 拉回内存，
+    //   若用户刚改时间重置过，必须拒绝复活早于该时间戳的旧发送记录。
+    //   当云端 scheduler 真实发送后，新的 sentAt 必然晚于 _resetAt，届时正常复活并清除标记。
+    n._resetAt = Date.now();
     // 2) 清受众级（运营人提示）
     ac.sendAttempts = 0;
     ac.lastError = '';
@@ -1337,6 +853,10 @@
     if(clientSendDueInFlight) return;     // 防重入
     clientSendDueInFlight = true;
     try{
+      // 焦点保护：用户正在编辑表单时不发送，避免"打字时通知被发出"的打断感。
+      // 云端定时调度(send-due-scheduled)是主链路、不依赖浏览器，不受此限；浏览器兜底仅在空闲时发送。
+      // ignoreFocus：notifyAt change 事件处显式传入，确保"改完时间立即生效"不被焦点保护误杀。
+      if(!options.ignoreFocus && isEditingForm()) return;
       const now = Date.now();
       // 一次性拉已 sent 的 tn_sends 行，避免反复查
       let sentIds = new Set();
@@ -1352,7 +872,7 @@
               const ac = n.audienceContent && n.audienceContent[a];
               if(!ac || !ac.enabled || !ac.notifyAt) continue;
               if(ac.autoSend===false) continue;           // 用户显式暂停的不发
-              const at = new Date(ac.notifyAt).getTime();
+              const at = parseNotifyAtBeijing(ac.notifyAt);
               if(isNaN(at)) continue;
               const diffMs = now - at;
               // 窗口：60s 周期看 (now-30s, now+30min]；force 模式（silentSave 后立即）放宽到 (now-30min, now+30min]
@@ -1434,14 +954,26 @@
         if(!r.ok) return;
         const j = await r.json();
         const fresh = j.projects || [];
-        projects = fresh;
         if(view==='edit' && currentProjectId && project){
           const latest = fresh.find(p=>p.id===currentProjectId);
           // 编辑视图下不整把替换 project（会覆盖用户未保存的编辑），只 merge cloud 权威字段
-          if(latest) mergeCloudAuthorityFields(project, latest);
+          if(latest){
+            const {local: merged, dirty} = mergeCloudAuthorityFields(project, latest);
+            project = merged;
+            // [v10.7.18] 把 merge 后的干净状态同步回 projects[]，
+            //   否则 buildOverviewRows(true) 仍从 projects 数组取到旧 fresh 数据。
+            const pidx = fresh.findIndex(p=>p.id===currentProjectId);
+            if(pidx>=0) fresh[pidx] = merged;
+            // [v10.7.18] 发现旧记录污染时立即写回云端，防止旧版本标签页反复覆盖
+            if(dirty && typeof silentSave==='function') silentSave();
+          }
         }
+        projects = fresh;
         const isHomeOverview = view==='list' && homeSection==='overview';
         const isProjectOverview = view==='edit' && editSection==='overview';
+        // 焦点保护：用户正在编辑表单（textarea/input）时不重建 DOM，
+        // 否则 12s 轮询会刷新掉正在输入的文本框（用户感知的"自动保存打断输入/页面刷新"）。
+        if(isEditingForm()) return;
         if(isHomeOverview){
           const sc = document.querySelector('#app');
           const st = sc ? sc.scrollTop : 0;
@@ -1457,14 +989,26 @@
       overviewPollInFlight = true;
       try{
         const fresh = await cloudListProjects();
-        projects = fresh;
         if(view==='edit' && currentProjectId && project){
           const latest = fresh.find(p=>p.id===currentProjectId);
           // 编辑视图下不整把替换 project（会覆盖用户未保存的编辑），只 merge cloud 权威字段
-          if(latest) mergeCloudAuthorityFields(project, latest);
+          if(latest){
+            const {local: merged, dirty} = mergeCloudAuthorityFields(project, latest);
+            project = merged;
+            // [v10.7.18] 把 merge 后的干净状态同步回 projects[]，
+            //   否则 buildOverviewRows(true) 仍从 projects 数组取到旧 fresh 数据。
+            const pidx = fresh.findIndex(p=>p.id===currentProjectId);
+            if(pidx>=0) fresh[pidx] = merged;
+            // [v10.7.18] 发现旧记录污染时立即写回云端，防止旧版本标签页反复覆盖
+            if(dirty && typeof silentSave==='function') silentSave();
+          }
         }
+        projects = fresh;
         const isHomeOverview = view==='list' && homeSection==='overview';
         const isProjectOverview = view==='edit' && editSection==='overview';
+        // 焦点保护：用户正在编辑表单（textarea/input）时不重建 DOM，
+        // 否则 12s 轮询会刷新掉正在输入的文本框（用户感知的"自动保存打断输入/页面刷新"）。
+        if(isEditingForm()) return;
         if(isHomeOverview){
           const sc = document.querySelector('#app');
           const st = sc ? sc.scrollTop : 0;
@@ -1667,6 +1211,7 @@
     sb.appendChild(nav('✨','智能识别',editSection==='parse',()=>setEditSection('parse')));
     sb.appendChild(nav('📋','推送概览',editSection==='overview',()=>setEditSection('overview')));
     sb.appendChild(nav('📁','通知列表',editSection==='notifs',()=>setEditSection('notifs')));
+    sb.appendChild(nav('🗓️','系列推送',editSection==='series',()=>setEditSection('series')));
 
     // 通知树：直接挂在「通知列表」下方
     const tree = document.createElement('div'); tree.className='nav-tree';
@@ -1716,6 +1261,7 @@
     if(editSection==='meta') app.appendChild(renderProjectMeta());
     else if(editSection==='parse') app.appendChild(renderSmartIdentifySection());
     else if(editSection==='overview') app.appendChild(buildOverviewPanel(true));
+    else if(editSection==='series') app.appendChild(renderSeriesSection());
     else app.appendChild(renderNotificationsSection());
   }
 
@@ -2257,7 +1803,9 @@
       // [v10.7.5] 改时间默认「取消勾选自动发送」——共用 resetSentStateOnNotifyChange：
       //   ① 清本地权威字段（推送概览不再"已发送"）
       //   ② await 删除云端 tn_sends（旧 sendId 阻塞新窗口的 claim 会让云端永远跳过）
-      if(oldAt && newAt && oldAt !== newAt){
+      // [v10.7.12 root-fix] 任何时间变更（含首次从空设为新时间）都必须重置发送状态。
+      //   旧条件 `oldAt && newAt` 导致首次设时间时跳过重置，旧 sentAudiences 残留 → 云端永远跳过。
+      if(oldAt !== newAt){
         const hadSent = resetSentStateOnNotifyChange(n, ac);
         // [v10.2 root-fix] 立即改 DOM checkbox state（不依赖 render 重建）：
         //   Edge 浏览器对 innerHTML 重建 checkbox 时 prop/attr 偶发错位——
@@ -2297,7 +1845,7 @@
         queueMicrotask(()=>{
           try{
             if(typeof pollOverview==='function') pollOverview();
-            if(typeof clientSendDue==='function') clientSendDue({force:true});
+            if(typeof clientSendDue==='function') clientSendDue({force:true, ignoreFocus:true});
           }catch(e){}
         });
         return;
@@ -3071,34 +2619,172 @@
   }
 
   // ---------- 推送概览 ----------
-  // 辅助：推送概览「行级状态」实时计算（不依赖 n.lastError，避免和 scheduler 写入脱节导致误判）
-  // 输入：通知 n + 受众 aud
-  // 输出：{ status, err, sentAt }  status ∈ sent | skipped | draft
+  // ---------- 推送概览（v10.7.9） ----------
+  // 行级状态 4 字段：group + status + sentAt + reason
+  //   group:   pending (待发送) | draft (草稿箱) | sent (已发送)
+  //   status:  pending | draft | success | failed     （UI 仅显示这 4 种简单标签）
+  //   reason:  失败时的详细文案（与 send-due-scheduled 的 diag.why 一一对应）
+  //   sentAt:  真实发送时刻（ISO），仅 status==='success' 有值
+  // 输入：通知 n + 受众 aud；输出：4 字段
   function computeRowStatus(n, aud){
     const ac = n.audienceContent && n.audienceContent[aud];
-    if(!ac) return { status:'draft', err:'', sentAt:'' };
-    // 已发送：必须同时满足 (1) sentAudiences 含 aud 且 (2) sentAt 实际存在
-    // (避免"历史残留 sentAuds=true 但 sentAt=空"显示成"已发送"+实际发送"—"的矛盾)
+    if(!ac) return { group:'draft', status:'draft', sentAt:'', reason:'未配置该受众' };
+    // 真正已发送：双校验 n.sentAudiences 含 aud + n.sentAt 非空
     if(Array.isArray(n.sentAudiences) && n.sentAudiences.includes(aud) && n.sentAt){
-      return { status:'sent', err:'', sentAt:n.sentAt };
-    }
-    // 已暂停：运营人改过时间/文案，自动发送被取消且未重新勾选 → 区分"草稿"避免误判
-    if(ac.enabled && ac.autoSend===false && ac.notifyAt){
-      return { status:'paused', err:'自动发送已暂停', sentAt:'' };
+      return { group:'sent', status:'success', sentAt:n.sentAt, reason:'' };
     }
     const at = ac.notifyAt;
-    if(at){
-      const t = new Date(at);
-      if(!isNaN(t.getTime())){
-        const diff = Date.now() - t.getTime();
-        // 过期超过 24h 窗口 → 标 skipped
-        if(diff > 24*3600*1000){
-          return { status:'skipped', err:'发送时间已超过 24h，自动跳过', sentAt:'' };
-        }
-      }
+    // -------- 草稿箱：通知时间未设置（用户原话"草稿箱=没完成设置的"） --------
+    if(!at){
+      let reason = '';
+      if(!ac.content) reason = '文案为空';
+      else if(!(ac.targetGroups||[]).length) reason = '未配置目标群';
+      else if(ac.autoSend===false) reason = '未启用自动发送';
+      return { group:'draft', status:'draft', sentAt:'', reason };
     }
-    // 其他情况（未到点 / 未设置时间 / 有时间但未选群 / 正常草稿）统一显示草稿，不写误引导的 err
-    return { status:'draft', err:'', sentAt:'' };
+    const t = parseNotifyAtBeijing(at);
+    if(isNaN(t)){
+      return { group:'draft', status:'draft', sentAt:'', reason:'通知时间格式无法解析：'+String(at) };
+    }
+    const nowMs = Date.now();
+    const diff = nowMs - t;       // 已过多少 ms（>0）
+    const diffMin = Math.floor(diff/60000);
+    // -------- 待发送：通知时间在未来 --------
+    if(diff < 0){
+      // 即便 autoSend=false 也在待发送（用户原话"设置了发送时间"=待发送），但显示状态为"草稿"+ reason
+      if(ac.autoSend===false){
+        return { group:'pending', status:'draft', sentAt:'', reason:'已设发送时间但未启用自动发送（需勾选自动发送才会触发）' };
+      }
+      return { group:'pending', status:'pending', sentAt:'', reason:'' };
+    }
+    // -------- 已发送：通知时间已过（不论是否真发，都进已发送组；按用户原话"被跳过本身也是发送失败的一种"） --------
+    if(ac.autoSend===false){
+      return { group:'sent', status:'failed', sentAt:'',
+        reason:`自动发送已暂停：用户在发送时间前取消勾选「自动发送」。请重新进入通知设置启用后并设置新时间触发。` };
+    }
+    if(!(ac.targetGroups||[]).length){
+      return { group:'sent', status:'failed', sentAt:'',
+        reason:`未配置目标群：send-due-scheduled 不会发送无目标群的通知。请进入通知设置添加目标群。` };
+    }
+    if(diff > 24*3600*1000){
+      return { group:'sent', status:'failed', sentAt:'',
+        reason:`错过 24h 主动发送窗口：notifyAt=${at}（已过 ${diffMin} 分钟，>24h），scheduler 不会再主动补发。请重新设置新的发送时间，或使用「立即发送」先发。` };
+    }
+    if(diff > 6*3600*1000){
+      return { group:'sent', status:'failed', sentAt:'',
+        reason:`超出主动发送窗口（0-6h）：notifyAt=${at}（已过 ${diffMin} 分钟，主动窗口已过），scheduler 不会重发。建议：重新设置新的发送时间，或排查 pg_cron 状态。` };
+    }
+    // 0..6h 内仍未发：可能 scheduler 暂未到达 / claim 阻塞 / 函数未部署 / 网络
+    return { group:'sent', status:'failed', sentAt:'',
+      reason:`通知时间已过 ${diffMin} 分钟但尚未发送：scheduler 可能尚未到达（pg_cron 每 5 分钟一次）或 send-due-scheduled 函数执行失败。点页头「诊断最近定时调度」按钮可实时调一次函数并返回每条 why。` };
+  }
+
+  // 失败原因精简：截前 50 字避免列宽爆炸；完整文案进 tooltip
+  function shortReason(r){
+    if(!r || !r.reason) return '';
+    if(r.reason.length <= 60) return r.reason;
+    return r.reason.slice(0, 58) + '…';
+  }
+
+  // [v10.7.9] 辅助：把 ISO 时间戳渲染成 HH:MM:SS（用于"状态"列内嵌真实发送时刻）
+  function fmtHHMMSS(iso){
+    if(!iso) return '';
+    const d = new Date(iso);
+    if(isNaN(d.getTime())) return '';
+    const h = String(d.getHours()).padStart(2,'0');
+    const m = String(d.getMinutes()).padStart(2,'0');
+    const s = String(d.getSeconds()).padStart(2,'0');
+    return `${h}:${m}:${s}`;
+  }
+
+  // [v10.7.11] 调 send-due-scheduled Edge Function 实时返回 diag 数组，弹出诊断面板
+  //   用于排查"定时发送依旧没有发出"的根因：每条 (pid/nid/aud) 显示 why，与后端 diag.why 一一对应
+  //   [v10.7.11] 改用原生 fetch（不依赖 _sb.functions.invoke）：
+  //     Supabase JS v2 的 functions.invoke 在 EdgeOne CDN 缓存路径下偶发
+  //     "Failed to send a request to the Edge Function"（fetch 抛 TypeError），
+  //     但服务端函数实际是好的——cURL 直测返回 ok:true。原 fetch 直接打到 /functions/v1/，
+  //     自带 apikey/Authorization，行为一致但绕开 SDK 内部 try/catch 黑盒。
+  async function callSendDueDiag(btn){
+    if(btn) { btn.disabled = true; btn.textContent = '诊断中…'; }
+    let result = null;
+    try{
+      const url = SB_URL + '/functions/v1/send-due-scheduled';
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + SB_ANON, 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const text = await r.text();
+      if(!r.ok){
+        result = { ok:false, error:'HTTP '+r.status+'：'+text.slice(0,300) };
+      } else {
+        try{ result = JSON.parse(text); }
+        catch(e){ result = { ok:false, error:'响应非 JSON：'+text.slice(0,300) }; }
+      }
+    }catch(e){
+      result = { ok:false, error:'网络失败：'+e.message };
+    }
+    showSendDueDiagModal(result);
+    if(btn){ btn.disabled = false; btn.textContent = '诊断最近定时调度'; }
+  }
+  // [v10.7.9] 弹窗：显示 runId + 概要 + diag 表 + 修复建议
+  function showSendDueDiagModal(result){
+    const old = document.getElementById('ovDiagMask'); if(old) old.remove();
+    const diag = Array.isArray(result?.diag) ? result.diag : [];
+    const summary = `
+      <div class="kv"><span>ok</span><b style="color:${result?.ok?'#00b42a':'#f53f3f'}">${esc(String(result?.ok))}</b></div>
+      <div class="kv"><span>runId</span><b>${esc(result?.runId||'')}</b></div>
+      <div class="kv"><span>scanned</span><b>${esc(String(result?.scanned??''))}</b></div>
+      <div class="kv"><span>实际发出</span><b>${esc(String((result?.sent||[]).length))}</b></div>
+      <div class="kv"><span>主动跳过</span><b>${esc(String((result?.skipped||[]).length))}</b></div>
+      <div class="kv"><span>错误</span><b>${esc(String((result?.errors||[]).length))}</b></div>
+      <div class="kv"><span>now</span><b>${esc(result?.now||'')}</b></div>
+      ${result?.error ? `<div class="kv" style="background:#fff5f5;border-radius:6px;padding:6px 8px"><span>error</span><b style="color:#f53f3f">${esc(result.error)}</b></div>`:''}
+    `;
+    // 修复建议：按 diag.why 出现次数排序，给出可执行的诊断
+    const WHY_TIPS = {
+      'disabled-or-no-ac':   '检查通知设置：受众是否启用 / audienceContent 是否存在',
+      'no-notifyAt':         '通知未设置发送时间，请进入通知设置填写',
+      'bad-notifyAt':        '通知时间格式异常，请检查 datetime-local 输入',
+      'future':              '未到通知时间（正常），调度将在 5 分钟内下次到达',
+      'past-24h':            '通知时间已超过 24h 主动窗口，scheduler 不会再发；请设置新发送时间或立即发送',
+      'no-target-groups':    '通知未配置目标群，请进入通知设置添加目标群',
+      'already-in-sentAudiences':'本地 n.sentAudiences 已含该受众（被前端或上一次发送标记），忽略；如要重发，请清除该受众的发送标记',
+      'already-sent':        'tn_sends 表已存在该受众的成功发送记录（真实发送过），无需重发',
+      'no-network-call':     '（保留）本函数为主动发送路径，正常不会触发此项',
+      'webhook-err':         '企微 webhook 业务错误：检查 errcode+errmsg；常见 40039=url 缺失/40xxx=鉴权/无权限'
+    };
+    const tipCount = new Map();
+    diag.forEach(d=>{ const k = d.why||'(unknown)'; tipCount.set(k, (tipCount.get(k)||0)+1); });
+    const tipLines = Array.from(tipCount.entries()).sort((a,b)=>b[1]-a[1]).map(([k,c])=>{
+      const tip = WHY_TIPS[k] || '（无内置建议）';
+      return `<div class="kv"><span style="font-family:monospace;font-size:12px">${esc(k)} ×${c}</span><b>${esc(tip)}</b></div>`;
+    }).join('');
+    const tbl = diag.length===0
+      ? '<p class="sub">diag 为空（暂无触达任何 (pid/nid/aud) 路径）</p>'
+      : `<table style="font-size:12px;margin-top:8px">
+          <tr><th>pid</th><th>nid</th><th>aud</th><th>why</th><th>notifyAt</th></tr>
+          ${diag.map(d=>`<tr>
+            <td>${esc(d.pid||'')}</td><td>${esc(d.nid||'')}</td><td>${esc(d.aud||'')}</td>
+            <td style="font-family:monospace;color:${d.why==='past-24h'||d.why==='no-target-groups'?'#f53f3f':'#646a73'}">${esc(d.why||'')}</td>
+            <td>${esc(d.notifyAt||'')}</td>
+          </tr>`).join('')}
+        </table>`;
+    const mask = document.createElement('div'); mask.className='modal-mask show'; mask.id='ovDiagMask';
+    mask.innerHTML = `<div class="modal" style="max-width:780px;max-height:80vh;overflow:auto">
+      <h3>诊断最近定时调度 <span class="sub" style="font-weight:normal;font-size:12px;margin-left:8px">（实时调用 send-due-scheduled）</span></h3>
+      ${summary}
+      <h4 style="margin:14px 0 4px;font-size:13px">诊断明细（每条 (pid/nid/aud) 路径）</h4>
+      ${tbl}
+      <h4 style="margin:14px 0 4px;font-size:13px">修复建议（按出现次数排序）</h4>
+      ${tipLines || '<p class="sub">无</p>'}
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+        <button class="ghost" id="ovDiagClose">关闭</button>
+      </div>
+    </div>`;
+    document.body.appendChild(mask);
+    mask.addEventListener('click',(e)=>{ if(e.target===mask) mask.remove(); });
+    mask.querySelector('#ovDiagClose').addEventListener('click',()=> mask.remove());
   }
 
   // 辅助：取通知下启用受众的最早发送时间（数据模型中 notifyAt 在 audienceContent 内）
@@ -3108,7 +2794,7 @@
       .filter(Boolean);
     return times.sort()[0] || null;
   }
-  // 辅助：构建推送概览表格行（按受众展开），按发送时间升序
+  // 辅助：构建推送概览表格行（按受众展开）；输出对象携带 [v10.7.9] group+status 双字段
   function buildOverviewRows(singleProject){
     const rows=[];
     let source;
@@ -3126,29 +2812,36 @@
             const ac = n.audienceContent && n.audienceContent[a];
             // 停用项（ac.enabled=false）不展开为概览行：避免把"不会真发"的项混进"推送概览"
             if(ac && ac.enabled){
-              const row = computeRowStatus(n, a);
-              rows.push({key:`${p.id||''}::${s.id}::${n.id}::${a}`, pid:p.id||'', sid:s.id, nid:n.id, aud:a, proj:(p.projectName||p.name)||'未命名项目', stage:s.name||'阶段', notif:n.name||'通知', audLabel:GROUPS_LABEL[a], enabled:!!ac.enabled, content:(ac.content||''), time:ac.notifyAt||'', status:row.status, sentAt:row.sentAt, err:row.err, targets:(ac.targetGroups||[]).map(id=>(globalGroups.find(g=>g.id===id)||{}).name).filter(Boolean).join('、')});
+              const r = computeRowStatus(n, a);
+              rows.push({
+                key:`${p.id||''}::${s.id}::${n.id}::${a}`, pid:p.id||'', sid:s.id, nid:n.id, aud:a,
+                proj:(p.projectName||p.name)||'未命名项目',
+                stage:s.name||'阶段', notif:n.name||'通知', audLabel:GROUPS_LABEL[a],
+                enabled:!!ac.enabled, content:(ac.content||''), time:ac.notifyAt||'',
+                // [v10.7.9] 4 字段语义
+                group:r.group, status:r.status, sentAt:r.sentAt, reason:r.reason,
+                targets:(ac.targetGroups||[]).map(id=>(globalGroups.find(g=>g.id===id)||{}).name).filter(Boolean).join('、')
+              });
             }
           });
         });
       });
     });
-    // 排序规则：1) 已发送整体置后于未发送；2) 已发送内按实际发送时间 sentAt 倒序（最新在前）；3) 未发送内按发送时间 time 升序，未设定置后
     rows.sort(compareOverviewRows);
     return rows;
   }
+  // [v10.7.9] 按 group + 组内时间排序
+  //   pending:  notifyAt 正序（最早到期的在前）
+  //   sent:     notifyAt 倒序（最近过期的在前）
+  //   draft:    notifyAt 倒序兜底（未设置的放最后）
+  // 跨组：在 buildOverviewRows 处已经按 group 拆好数组分别 sort，此函数负责组内 + 横跨的兜底
   function compareOverviewRows(a, b){
-    const aSent = a.status === 'sent';
-    const bSent = b.status === 'sent';
-    if(aSent && !bSent) return 1;       // 已发送置后
-    if(!aSent && bSent) return -1;
-    if(aSent && bSent){
-      return (b.sentAt||'').localeCompare(a.sentAt||'');
+    if(a.group !== b.group){
+      const order = { pending:1, sent:2, draft:3 };
+      return order[a.group] - order[b.group];
     }
-    if(!a.time && !b.time) return 0;
-    if(!a.time) return 1;                // 未设定发送时间置后
-    if(!b.time) return -1;
-    return a.time.localeCompare(b.time);
+    if(a.group === 'pending') return (a.time||'').localeCompare(b.time||'');   // 正序
+    return (b.time||'').localeCompare(a.time||'');                              // 倒序
   }
   // 辅助：构建临近节点（未来7天及近7天已过期未发送），按临近程度升序
   // 修复：移除"已发送则跳过"逻辑——已发但仍在今日/明日的节点应保留显示并打"已发"标识，
@@ -3170,15 +2863,16 @@
           // 不再因为 n.status==='sent' 直接 return；已发但仍在今日/明日窗口的仍显示
           const notifyAt = getNotificationNotifyAt(n);
           if(!notifyAt) return;
-          const nt=new Date(notifyAt);
-          if(isNaN(nt.getTime())) return;
-          const diff=nt.getTime()-now.getTime();
+          const nt = parseNotifyAtBeijing(notifyAt);     // [v10.7.6] nt 为 number（毫秒）；比较 now 走 Date.valueOf()
+          if(isNaN(nt)) return;
+          const nowMs = now.getTime();
+          const diff = nt - nowMs;
           if(diff < -WINDOW) return;        // 超过过去 7 天未发 才隐藏
-          const t1=new Date(nt.getTime()-24*60*60*1000);
-          const t2=new Date(nt.getTime()-2*60*60*1000);
+          const t1 = nt - 24*60*60*1000;    // reminder1d 窗口起点（ms）
+          const t2 = nt - 2*60*60*1000;     // reminder2h 窗口起点（ms）
           const auds=['student','lecturer','manager'].filter(a=>n.audienceContent&&n.audienceContent[a]&&n.audienceContent[a].enabled).map(a=>GROUPS_LABEL[a]||a).join('、')||'（未设置受众）';
-          const r1 = n.reminder1dSentAt ? 'done' : (now>=t1 && now<nt ? 'due' : 'wait');
-          const r2 = n.reminder2hSentAt ? 'done' : (now>=t2 && now<nt ? 'due' : 'wait');
+          const r1 = n.reminder1dSentAt ? 'done' : (nowMs>=t1 && nowMs<nt ? 'due' : 'wait');
+          const r2 = n.reminder2hSentAt ? 'done' : (nowMs>=t2 && nowMs<nt ? 'due' : 'wait');
           // 是否所有启用受众都已发送
           const enabledAuds = ['student','lecturer','manager'].filter(a=>n.audienceContent&&n.audienceContent[a]&&n.audienceContent[a].enabled);
           const sentAuds = Array.isArray(n.sentAudiences) ? n.sentAudiences : [];
@@ -3312,29 +3006,46 @@
     }));
   }
 
-  // 全局推送概览（主界面）：三块独立分页 + 视觉分组
+  // 全局推送概览（主界面）：[v10.7.9] 三块独立分页 = 待发送 / 草稿箱 / 已发送
+  //   状态字段 4 种统一：草稿 / 待发送 / 发送成功 / 发送失败
+  //   "实际发送时间" 嵌入"状态"列右侧（仅成功）；移除"实际发送"独立列，腾位给"目标群"
+  //   "失败原因" 列：仅发送失败行展示详细原因，其他行 "—"
+  //   新增 "诊断最近定时调度" 按钮到主卡片 h3 旁，调 send-due-scheduled
   function buildGlobalOverviewPanel(){
     const rows = buildOverviewRows(false);
-    // 按状态拆分：待发送（draft/failed/skipped/paused）+ 已发送（sent）
-    const pendingRows = rows.filter(r => r.status !== 'sent');
-    const sentRows = rows.filter(r => r.status === 'sent');
+    // [v10.7.9] 按 group 拆分：3 组 = pending / draft / sent
+    const pendingRows = rows.filter(r => r.group === 'pending');
+    const draftRows   = rows.filter(r => r.group === 'draft');
+    const sentRows    = rows.filter(r => r.group === 'sent');
     const todayIso = new Date().toISOString().slice(0,10);
     const tomorrowIso = new Date(Date.now()+24*60*60*1000).toISOString().slice(0,10);
+    // 状态 4 字段渲染：草稿 / 待发送 / 发送成功 / 发送失败
+    const STATUS_PILL = (st, sentAt)=>{
+      switch(st){
+        case 'pending': return '<span class="pill pending">待发送</span>';
+        case 'success': return `<span class="pill sent">发送成功</span> ${sentAt ? `<span class="sub" style="margin-left:6px">${esc(fmtHHMMSS(sentAt))}</span>` : ''}`;
+        case 'failed':  return '<span class="pill failed">发送失败</span>';
+        default:        return '<span class="pill draft">草稿</span>';
+      }
+    };
     const fmtRow = (r, group) => {
+      // 今天/明天小标签（仅待发送 / 草稿箱行；已发送不在此显示）
       let mark = '';
-      if(r.time && r.status!=='sent'){
+      if(r.time && r.group !== 'sent'){
         const d = r.time.slice(0,10);
         if(d===todayIso) mark = '<span class="pill today">今天</span>';
         else if(d===tomorrowIso) mark = '<span class="pill soon">明天</span>';
       }
-      const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
       const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
       const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
-      const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
-      const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
-      return `<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer"><td>${esc(r.proj)}</td><td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
+      const statusCell = STATUS_PILL(r.status, r.sentAt);
+      const reasonCell = r.status==='failed' && r.reason
+        ? `<span class="sub ov-reason" title="${esc(r.reason)}">${esc(shortReason(r))}</span>`
+        : '<span class="sub">—</span>';
+      return `<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer"><td>${esc(r.proj)}</td><td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${statusCell}</td><td>${reasonCell}</td></tr>`;
     };
-    const COLS_GLOBAL = '<tr><th>项目</th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>';
+    // [v10.7.9] 8 列：项目/阶段/通知/受众/发送时间/目标群/状态/失败原因
+    const COLS_GLOBAL = '<tr><th>项目</th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>失败原因</th></tr>';
 
     const frag = document.createDocumentFragment();
     const upcoming = buildUpcomingNodes(false);
@@ -3342,20 +3053,20 @@
     // 1) 临近节点置顶（带 5/页分页）
     frag.appendChild(renderUpcomingCard(upcoming, false));
 
-    // 2) 主卡片：分两组渲染
+    // 2) 主卡片：标题右侧加 "诊断最近定时调度" 按钮
     const card = document.createElement('div'); card.className='card ov-main';
-    card.innerHTML = `<h3>推送概览</h3>`;
+    card.innerHTML = `<h3>推送概览 <button class="ghost" id="ovDiagBtn" style="margin-left:auto;font-weight:normal;font-size:12px;padding:3px 10px" title="立即调用 send-due-scheduled Edge Function，返回每条通知的 why（适合排查"定时发送依旧没有发出"的根因）">诊断最近定时调度</button></h3>`;
     if(rows.length===0){ card.innerHTML += '<p class="sub">暂无通知。</p>'; }
     else {
       const note = document.createElement('p'); note.className='sub'; note.style.margin='4px 0 12px';
-      note.textContent = '全局视图：跨项目的批量操作请在对应项目内执行，点击项目名可进入项目。';
+      note.textContent = '全局视图：跨项目的批量操作请在对应项目内执行，点击项目名可进入项目。三类：①待发送（按时间正序）②草稿箱（按时间倒序）③已发送（按时间倒序，含失败）。';
       card.appendChild(note);
     }
-    // 待发送组
+    // [v10.7.9] 第 1 组：待发送
     buildOverviewSection(card, {
       rows: pendingRows,
       sectionKey: 'pending',
-      sectionTitle: '待发送',
+      sectionTitle: '① 待发送',
       renderRow: fmtRow,
       columnsHeader: COLS_GLOBAL,
       allRows: rows,
@@ -3363,23 +3074,43 @@
       getPage: ()=> pendingPage,
       setPage: (p)=>{ pendingPage = p; },
       totalLabel: '待发送',
-      emptyHint: pendingRows.length === 0 && sentRows.length > 0 ? '暂无待发送通知。' : null
+      emptyHint: pendingRows.length === 0 && draftRows.length === 0 && sentRows.length > 0 ? '暂无待发送通知。' : null
     });
-    // 已发送组
+    // [v10.7.9] 第 2 组：草稿箱
+    buildOverviewSection(card, {
+      rows: draftRows,
+      sectionKey: 'draft',
+      sectionTitle: '② 草稿箱',
+      renderRow: fmtRow,
+      columnsHeader: COLS_GLOBAL,
+      allRows: rows,
+      pageSize: DRAFT_PAGE_SIZE,
+      getPage: ()=> draftPage,
+      setPage: (p)=>{ draftPage = p; },
+      totalLabel: '草稿箱',
+      emptyHint: null
+    });
+    // [v10.7.9] 第 3 组：已发送（含发送成功的真实发送时间 + 失败的失败原因）
     buildOverviewSection(card, {
       rows: sentRows,
       sectionKey: 'sent',
-      sectionTitle: '已发送（历史归档）',
+      sectionTitle: '③ 已发送（含发送失败）',
       renderRow: fmtRow,
-      columnsHeader: '',  // 已发送组不重复表头
+      columnsHeader: COLS_GLOBAL,
       allRows: rows,
       pageSize: SENT_PAGE_SIZE,
       getPage: ()=> sentPage,
       setPage: (p)=>{ sentPage = p; },
       totalLabel: '已发送',
-      emptyHint: pendingRows.length > 0 && sentRows.length === 0 ? '暂无已发送通知。' : null
+      emptyHint: pendingRows.length === 0 && draftRows.length === 0 && sentRows.length === 0 ? '暂无已发送通知。' : null
     });
     frag.appendChild(card);
+
+    // "诊断最近定时调度" 按钮：调 send-due-scheduled，返回 diag 数组可视化
+    const diagBtn = card.querySelector('#ovDiagBtn');
+    if(diagBtn){
+      diagBtn.addEventListener('click',()=> callSendDueDiag(diagBtn));
+    }
 
     // 临近节点行点击
     if(upcoming.length>0){
@@ -3392,35 +3123,44 @@
     return frag;
   }
 
-  // 项目内推送概览：临近节点置顶 + 批量操作 + 三块独立分页
+  // 项目内推送概览：[v10.7.9] 临近节点置顶 + 批量操作 + 三块独立分页（与全局对称）
   function buildProjectOverviewPanel(){
     const rows = buildOverviewRows(true);
-    // 按状态拆分（与全局视图保持对称的"待发送 / 已发送"两块）
-    const pendingRows = rows.filter(r => r.status !== 'sent');
-    const sentRows = rows.filter(r => r.status === 'sent');
+    // [v10.7.9] 按 group 拆分（与全局对称：pending / draft / sent）
+    const pendingRows = rows.filter(r => r.group === 'pending');
+    const draftRows   = rows.filter(r => r.group === 'draft');
+    const sentRows    = rows.filter(r => r.group === 'sent');
     const now = new Date();
     const todayIso = now.toISOString().slice(0,10);
     const tomorrowIso = new Date(now.getTime()+24*60*60*1000).toISOString().slice(0,10);
 
+    const STATUS_PILL = (st, sentAt)=>{
+      switch(st){
+        case 'pending': return '<span class="pill pending">待发送</span>';
+        case 'success': return `<span class="pill sent">发送成功</span> ${sentAt ? `<span class="sub" style="margin-left:6px">${esc(fmtHHMMSS(sentAt))}</span>` : ''}`;
+        case 'failed':  return '<span class="pill failed">发送失败</span>';
+        default:        return '<span class="pill draft">草稿</span>';
+      }
+    };
     const fmtRow = (r, group) => {
       let mark = '';
-      if(r.time && r.status!=='sent'){
+      if(r.time && r.group !== 'sent'){
         const d = r.time.slice(0,10);
         if(d===todayIso) mark = '<span class="pill today">今天</span>';
         else if(d===tomorrowIso) mark = '<span class="pill soon">明天</span>';
       }
-      const status = r.status==='sent'?'<span class="pill sent">已发送</span>':r.status==='failed'?'<span class="pill failed">失败</span>':r.status==='skipped'?'<span class="pill skipped">已跳过</span>':r.status==='paused'?'<span class="pill paused">已暂停</span>':'<span class="pill draft">草稿</span>';
       const timeCell = r.time ? `${esc(r.time)} ${mark}` : '<span class="sub">未设定</span>';
       const target = r.enabled ? esc(r.targets||'(未选群)') : '<span class="sub">已停用</span>';
-      const sentAtCell = r.sentAt ? esc(r.sentAt) : '<span class="sub">—</span>';
-      const errCell = r.err ? `<span class="sub" title="${esc(r.err)}">${esc(r.err)}</span>` : '<span class="sub">—</span>';
+      const statusCell = STATUS_PILL(r.status, r.sentAt);
+      const reasonCell = r.status==='failed' && r.reason
+        ? `<span class="sub ov-reason" title="${esc(r.reason)}">${esc(shortReason(r))}</span>`
+        : '<span class="sub">—</span>';
       const chk = `<td><input type="checkbox" class="ov-checkbox ov-row-check" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}"></td>`;
-      return `<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer">${chk}<td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${status}</td><td>${sentAtCell}</td><td>${errCell}</td></tr>`;
+      return `<tr class="ov-row group-${group}" data-key="${esc(r.key)}" data-pid="${esc(r.pid)}" data-sid="${esc(r.sid)}" data-nid="${esc(r.nid)}" data-aud="${esc(r.aud)}" style="cursor:pointer">${chk}<td>${esc(r.stage)}</td><td>${esc(r.notif)}</td><td>${esc(r.audLabel)}</td><td>${timeCell}</td><td>${target}</td><td>${statusCell}</td><td>${reasonCell}</td></tr>`;
     };
-    // 项目内视图表头：带复选框列；只有"待发送"组用复选框（已发送不允许批量改时间等）
-    const COLS_PROJ_PENDING = `<tr><th style="width:30px"><input type="checkbox" id="ovHeadCheck" class="ov-checkbox" title="全选"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>`;
-    // 已发送组不重复表头与全选框
-    const COLS_PROJ_SENT = `<tr><th style="width:30px"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>实际发送</th><th>失败原因</th></tr>`;
+    // [v10.7.9] 8 列（去掉"实际发送"独立列，状态内嵌时刻）
+    const COLS_PROJ_PENDING = `<tr><th style="width:30px"><input type="checkbox" id="ovHeadCheck" class="ov-checkbox" title="全选"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>失败原因</th></tr>`;
+    const COLS_PROJ_DEFAULT = `<tr><th style="width:30px"></th><th>阶段</th><th>通知</th><th>受众</th><th>发送时间</th><th>目标群</th><th>状态</th><th>失败原因</th></tr>`;
 
     const frag = document.createDocumentFragment();
     const upcoming = buildUpcomingNodes(true);
@@ -3428,9 +3168,9 @@
     // 临近节点置顶（带 5/页分页）
     frag.appendChild(renderUpcomingCard(upcoming, true));
 
-    // 主卡片
+    // 主卡片：[v10.7.9] 标题右侧加"诊断"按钮
     const card = document.createElement('div'); card.className='card ov-main';
-    card.innerHTML = `<h3>推送概览</h3>`;
+    card.innerHTML = `<h3>推送概览 <button class="ghost" id="ovDiagBtn" style="margin-left:auto;font-weight:normal;font-size:12px;padding:3px 10px" title="立即调用 send-due-scheduled Edge Function，返回每条通知的 why（适合排查"定时发送依旧没有发出"的根因）">诊断最近定时调度</button></h3>`;
     if(rows.length===0){ card.innerHTML += '<p class="sub">暂无通知。</p>'; }
     else {
       const bulkbar = document.createElement('div'); bulkbar.className='bulkbar';
@@ -3443,11 +3183,11 @@
         <button class="primary" id="ovBulkGenerate">批量生成通知</button>`;
       card.appendChild(bulkbar);
     }
-    // 待发送组（含批量操作 UI）
+    // [v10.7.9] 第 1 组：待发送（含批量操作 UI）
     buildOverviewSection(card, {
       rows: pendingRows,
       sectionKey: 'pending',
-      sectionTitle: '待发送',
+      sectionTitle: '① 待发送',
       renderRow: fmtRow,
       columnsHeader: COLS_PROJ_PENDING,
       allRows: rows,
@@ -3455,23 +3195,43 @@
       getPage: ()=> pendingPage,
       setPage: (p)=>{ pendingPage = p; },
       totalLabel: '待发送',
-      emptyHint: pendingRows.length === 0 && sentRows.length > 0 ? '暂无待发送通知。' : null
+      emptyHint: pendingRows.length === 0 && draftRows.length === 0 && sentRows.length > 0 ? '暂无待发送通知。' : null
     });
-    // 已发送组（无复选框列）
+    // [v10.7.9] 第 2 组：草稿箱
+    buildOverviewSection(card, {
+      rows: draftRows,
+      sectionKey: 'draft',
+      sectionTitle: '② 草稿箱',
+      renderRow: fmtRow,
+      columnsHeader: COLS_PROJ_DEFAULT,
+      allRows: rows,
+      pageSize: DRAFT_PAGE_SIZE,
+      getPage: ()=> draftPage,
+      setPage: (p)=>{ draftPage = p; },
+      totalLabel: '草稿箱',
+      emptyHint: null
+    });
+    // [v10.7.9] 第 3 组：已发送（含发送失败的详细原因）
     buildOverviewSection(card, {
       rows: sentRows,
       sectionKey: 'sent',
-      sectionTitle: '已发送（历史归档）',
+      sectionTitle: '③ 已发送（含发送失败）',
       renderRow: fmtRow,
-      columnsHeader: COLS_PROJ_SENT,
+      columnsHeader: COLS_PROJ_DEFAULT,
       allRows: rows,
       pageSize: SENT_PAGE_SIZE,
       getPage: ()=> sentPage,
       setPage: (p)=>{ sentPage = p; },
       totalLabel: '已发送',
-      emptyHint: pendingRows.length > 0 && sentRows.length === 0 ? '暂无已发送通知。' : null
+      emptyHint: pendingRows.length === 0 && draftRows.length === 0 && sentRows.length === 0 ? '暂无已发送通知。' : null
     });
     frag.appendChild(card);
+
+    // [v10.7.9] "诊断最近定时调度" 按钮
+    const diagBtn = card.querySelector('#ovDiagBtn');
+    if(diagBtn){
+      diagBtn.addEventListener('click',()=> callSendDueDiag(diagBtn));
+    }
 
     // 批量操作事件绑定（项目内）
     if(rows.length>0){
@@ -3560,7 +3320,9 @@
     }
   }
   function openOverviewPopup(r){
-    const statusTxt = r.status==='sent'?'已发送':r.status==='failed'?'失败':r.status==='skipped'?'已跳过':'草稿';
+    // [v10.7.9] 4 状态统一标签：草稿 / 待发送 / 发送成功 / 发送失败
+    const STATUS_LABEL = { pending:'待发送', draft:'草稿', success:'发送成功', failed:'发送失败' };
+    const statusTxt = STATUS_LABEL[r.status] || r.status || '草稿';
     const enabledTxt = r.enabled ? '启用' : '已停用';
     const found = findAudienceConfig(r);
     let previewHtml = '<span style="color:#8a8f99">（无文案）</span>';
@@ -3581,9 +3343,9 @@
       <div class="kv"><span>受众</span><b>${esc(r.audLabel)}（${enabledTxt}）</b></div>
       <div class="kv"><span>目标群</span><b>${esc(r.targets||'(未选群)')}</b></div>
       <div class="kv"><span>发送时间</span><b>${esc(r.time||'未设定')}</b></div>
-      <div class="kv"><span>状态</span><b>${statusTxt}</b></div>
+      <div class="kv"><span>状态</span><b style="color:${r.status==='success'?'#00b42a':r.status==='failed'?'#f53f3f':''}">${statusTxt}</b></div>
       ${r.sentAt?`<div class="kv"><span>实际发送</span><b>${esc(r.sentAt)}</b></div>`:''}
-      ${r.err?`<div class="kv"><span>失败原因</span><b style="color:#e5484d">${esc(r.err)}</b></div>`:''}
+      ${r.reason?`<div class="kv"><span>${r.status==='failed'?'失败原因':'备注'}</span><b style="color:#e5484d">${esc(r.reason)}</b></div>`:''}
       <div class="kv" style="flex-direction:column;align-items:stretch">
         <span>文案预览</span>
         <div class="preview-box wx-body">${previewHtml}</div>
@@ -4409,16 +4171,450 @@
     m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('show'); });
   });
 
+  // ===================== 系列推送（独立模块 · 不影响现有通知/调度/概览） =====================
+  // 数据真源：tn_kv 键 `series:<pid>`，与 project:<pid> 完全隔离（现有 silentSave/pollOverview 不触碰）。
+  // 定时发送：独立 Edge Function send-due-series + 独立 pg_cron，复用 tn_sends 做幂等。
+  // 现有 send-due-scheduled / 图文编排 / 推送概览：零改动。
+
+  // 2026 法定节假日（内置，年度更新）。周末恒定排除；节假日为最佳努力值，日历可逐日人工修正。
+  const SERIES_HOLIDAYS_2026 = {
+    '2026-01-01':'元旦','2026-01-02':'元旦','2026-01-03':'元旦',
+    '2026-02-17':'春节','2026-02-18':'春节','2026-02-19':'春节','2026-02-20':'春节','2026-02-21':'春节','2026-02-22':'春节','2026-02-23':'春节',
+    '2026-04-04':'清明','2026-04-05':'清明','2026-04-06':'清明',
+    '2026-05-01':'劳动节','2026-05-02':'劳动节','2026-05-03':'劳动节','2026-05-04':'劳动节','2026-05-05':'劳动节',
+    '2026-06-19':'端午','2026-06-20':'端午','2026-06-21':'端午',
+    '2026-09-25':'中秋','2026-09-26':'中秋','2026-09-27':'中秋',
+    '2026-10-01':'国庆','2026-10-02':'国庆','2026-10-03':'国庆','2026-10-04':'国庆','2026-10-05':'国庆','2026-10-06':'国庆','2026-10-07':'国庆'
+  };
+  function seriesWeekend(dStr){ const d=new Date(dStr+'T00:00:00'); const w=d.getDay(); return w===0||w===6; }
+  function seriesHolidayName(dStr, custom){
+    if(custom){ const c=(custom||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean); if(c.includes(dStr)) return '自定义跳过'; }
+    return SERIES_HOLIDAYS_2026[dStr]||'';
+  }
+  function seriesIsNonWork(dStr, s){
+    if(seriesWeekend(dStr)) return true;
+    if(s.excludeHoliday!==false && seriesHolidayName(dStr, s.customSkip)) return true;
+    return false;
+  }
+
+  let seriesData = { series:[], holidays:{}, __pid:null };
+  let activeSeriesId = null;
+  let seriesSaveTimer = null;
+  let seriesCalY = 2026, seriesCalM = 9;
+  const seriesStatus = {}; // sid -> { 'YYYY-MM-DD': 'sent'|'failed' }
+
+  function seriesFind(id){ return (seriesData.series||[]).find(s=>s.id===id); }
+  function seriesFmt(d){ const p=n=>n<10?'0'+n:''+n; return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
+  function seriesParse(s){ const a=String(s).split('-').map(Number); return new Date(a[0],a[1]-1,a[2]); }
+
+  async function seriesLoad(){
+    if(!currentProjectId) return;
+    if(seriesData.__pid===currentProjectId) return; // 同项目只拉一次
+    try{
+      const d = await cloudGet('series:'+currentProjectId);
+      seriesData = (d && typeof d==='object') ? d : { series:[], holidays:{} };
+    }catch(e){ seriesData = { series:[], holidays:{} }; }
+    if(!seriesData.series) seriesData.series=[];
+    if(!seriesData.holidays) seriesData.holidays={};
+    seriesData.__pid = currentProjectId;
+  }
+  function seriesSave(){
+    if(seriesSaveTimer) clearTimeout(seriesSaveTimer);
+    seriesSaveTimer = setTimeout(async ()=>{
+      if(!currentProjectId) return;
+      await cloudSet('series:'+currentProjectId, seriesData);
+    }, 600);
+  }
+  async function seriesRefreshStatus(s){
+    if(!_sb) return;
+    try{
+      const like = 'series:'+currentProjectId+':'+s.id+':*';
+      const { data } = await _sb.from('tn_sends').select('id,status').like('id', like);
+      const map = {};
+      (data||[]).forEach(r=>{ const m=/:([\d-]{8,})?:?main$/.exec(r.id); if(!m) return; map[m[1]] = (r.status==='sent'?'sent':(r.status==='failed'?'failed':'sent')); });
+      seriesStatus[s.id] = map;
+    }catch(e){ /* tn_sends 可能不可读，忽略 */ }
+  }
+  function seriesEnsureStyles(){
+    if(document.getElementById('seriesStyles')) return;
+    const st=document.createElement('style'); st.id='seriesStyles';
+    st.textContent = `
+      .series-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:8px}
+      .series-cal .cell{border:1px solid var(--bd,#e5e7eb);border-radius:8px;min-height:74px;padding:6px;cursor:pointer;position:relative;background:#fff;font-size:12px}
+      .series-cal .cell:hover{box-shadow:0 1px 6px rgba(0,0,0,.12)}
+      .series-cal .cell.dim{background:#f7f8fa;color:#bbb;cursor:default}
+      .series-cal .cell .d{font-weight:600}
+      .series-cal .cell .tag{position:absolute;right:5px;top:5px;font-size:10px;padding:1px 5px;border-radius:6px}
+      .series-cal .tag.sent{background:#e7f7ec;color:#1a7f37}
+      .series-cal .tag.fail{background:#fdecec;color:#c0392b}
+      .series-cal .tag.skip{background:#fff4e0;color:#b9770e}
+      .series-cal .tag.off{background:#f0f1f3;color:#9aa0a6}
+      .series-cal .tag.ready{background:#eef4ff;color:#2563eb}
+      .series-cal .weekday{text-align:center;font-size:11px;color:var(--sub,#888);padding-bottom:2px}
+      .seg button{border:1px solid var(--bd,#e5e7eb);background:#fff;padding:6px 14px;font-size:13px;cursor:pointer}
+      .seg button.active{background:var(--brand,#3370ff);color:#fff;border-color:var(--brand,#3370ff)}
+      .seg button:first-child{border-radius:6px 0 0 6px}
+      .seg button:last-child{border-radius:0 6px 6px 0}
+      .seg button:not(:first-child){border-left:none}
+      .chk-group{display:flex;flex-wrap:wrap;gap:8px;max-height:120px;overflow:auto}
+      .chk-group .chk{display:inline-flex;align-items:center;gap:4px;font-size:13px}
+      .series-day-img{height:90px;background:#eef1f5;background-size:cover;background-position:center;border-radius:6px;margin-bottom:6px}
+    `;
+    document.head.appendChild(st);
+  }
+
+  function renderSeriesSection(){
+    seriesEnsureStyles();
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<h3>系列推送</h3>
+      <div class="sub" style="margin-bottom:10px">按"某段时间内每日固定时间推送不同图文"的场景设计。数据独立存储，定时发送走独立调度链路，<b>不影响现有通知与图文编排</b>。发送状态在下方日历中实时显示（读自 tn_sends）。</div>
+      <div class="row" style="gap:10px;align-items:flex-end;margin-bottom:14px">
+        <div class="field"><label>选择系列</label><select id="seriesSel"></select></div>
+        <button class="primary" id="btnNewSeries">+ 新建系列</button>
+        <button class="ghost danger" id="btnDelSeries">删除当前系列</button>
+      </div>
+      <div id="seriesBody"></div>`;
+    const sel = wrap.querySelector('#seriesSel');
+    function fillSel(){
+      if((seriesData.series||[]).length===0){ sel.innerHTML='<option value="">（暂无系列）</option>'; }
+      else { sel.innerHTML = (seriesData.series||[]).map(s=>`<option value="${s.id}">${esc(s.name||'未命名系列')}</option>`).join(''); }
+      if(activeSeriesId && seriesFind(activeSeriesId)) sel.value=activeSeriesId;
+    }
+    fillSel();
+    sel.addEventListener('change',()=>{ activeSeriesId=sel.value||null; renderSeriesBody(); });
+    wrap.querySelector('#btnNewSeries').addEventListener('click',()=>{
+      const s={ id:uid(), name:'新系列 '+((seriesData.series||[]).length+1), targetGroupIds:[], time:'09:00', startDate:'', endDate:'', layout:'inline', excludeHoliday:true, customSkip:'', days:{}, createdAt:new Date().toISOString() };
+      seriesData.series=seriesData.series||[]; seriesData.series.push(s); activeSeriesId=s.id; seriesSave(); fillSel(); renderSeriesBody();
+    });
+    wrap.querySelector('#btnDelSeries').addEventListener('click',()=>{
+      if(!activeSeriesId){ toast('请先选择系列'); return; }
+      if(!confirm('删除当前系列及其所有日期内容？不可撤销。')) return;
+      seriesData.series = (seriesData.series||[]).filter(x=>x.id!==activeSeriesId);
+      delete seriesStatus[activeSeriesId]; activeSeriesId=null; seriesSave(); fillSel(); renderSeriesBody();
+    });
+    // 异步加载（同项目只拉一次），加载完重绘
+    seriesLoad().then(()=>{ if(activeSeriesId && !seriesFind(activeSeriesId)) activeSeriesId=null; fillSel(); renderSeriesBody(); });
+    setTimeout(renderSeriesBody,0);
+    return wrap;
+  }
+
+  function renderSeriesBody(){
+    const body = document.getElementById('seriesBody');
+    if(!body) return;
+    const s = activeSeriesId ? seriesFind(activeSeriesId) : null;
+    if(!s){ body.innerHTML='<div class="section-empty">点击「新建系列」开始，或在上方选择一个系列。</div>'; return; }
+    body.innerHTML = `
+      <div class="card">
+        <h4>① 系列配置</h4>
+        <div class="row">
+          <div class="field"><label>系列名称</label><input type="text" id="sName" value="${esc(s.name||'')}"></div>
+          <div class="field"><label>每日发送时间</label><input type="time" id="sTime" value="${esc(s.time||'09:00')}"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>起止日期</label>
+            <div class="row" style="gap:6px;margin:0">
+              <input type="date" id="sStart" value="${esc(s.startDate||'')}">
+              <span class="sub">至</span>
+              <input type="date" id="sEnd" value="${esc(s.endDate||'')}">
+            </div>
+          </div>
+          <div class="field" style="flex:1;min-width:240px"><label>目标群（复用通讯录）</label>
+            <div id="sGroups" class="chk-group"></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field" style="max-width:380px"><label>默认消息版式</label>
+            <div class="seg" id="sLayout">
+              <button data-lv="inline" class="${s.layout==='inline'?'active':''}">图文并排</button>
+              <button data-lv="card" class="${s.layout==='card'?'active':''}">卡片式</button>
+              <button data-lv="text" class="${s.layout==='text'?'active':''}">纯文字</button>
+            </div>
+          </div>
+          <label class="switch" style="align-self:flex-end"><input type="checkbox" id="sExcl" ${s.excludeHoliday!==false?'checked':''}><span class="slider"></span></label>
+          <span style="align-self:flex-end">自动排除周末/节假日</span>
+        </div>
+        <div class="field"><label>自定义跳过日期（可选，每行一个 YYYY-MM-DD）</label>
+          <textarea id="sCustomSkip" style="min-height:50px">${esc(s.customSkip||'')}</textarea>
+        </div>
+      </div>
+
+      <div class="card">
+        <h4>② 内容导入</h4>
+        <div class="row" style="gap:10px;align-items:center">
+          <button class="ghost" id="btnTpl">⬇ 下载 Excel 填写模板</button>
+          <button class="ghost" id="seriesUploadBox">📎 上传表格（.xlsx/.csv）</button>
+          <input type="file" id="seriesFile" accept=".xlsx,.xls,.csv" hidden>
+          <span class="sub">已配置 <b id="dayCount">${Object.keys(s.days||{}).length}</b> 天</span>
+        </div>
+        <div class="sub" style="margin-top:6px">图片建议留空，上传请在日历里完成，系统自动生成链接。</div>
+      </div>
+
+      <div class="card">
+        <h4>③ 日历视图（点日期编辑 / 上传图片 / 预览 / 测发）</h4>
+        <div class="row" style="gap:10px;align-items:center;margin-bottom:8px">
+          <button class="ghost" id="calPrev">◀</button>
+          <b id="calTitle"></b>
+          <button class="ghost" id="calNext">▶</button>
+          <button class="ghost" id="btnGenDays">按起止日期生成工作日</button>
+          <span class="sub" id="calHint"></span>
+        </div>
+        <div class="series-cal" id="calHead"></div>
+        <div class="series-cal" id="calGrid"></div>
+      </div>
+    `;
+    body.querySelector('#sName').addEventListener('input',e=>{ s.name=e.target.value; seriesSave(); });
+    body.querySelector('#sTime').addEventListener('change',e=>{ s.time=e.target.value; seriesSave(); });
+    body.querySelector('#sStart').addEventListener('change',e=>{ s.startDate=e.target.value; if(s.startDate){ const d=seriesParse(s.startDate); seriesCalY=d.getFullYear(); seriesCalM=d.getMonth()+1; } renderCalendar(s); seriesSave(); });
+    body.querySelector('#sEnd').addEventListener('change',e=>{ s.endDate=e.target.value; seriesSave(); });
+    body.querySelector('#sExcl').addEventListener('change',e=>{ s.excludeHoliday=e.target.checked; renderCalendar(s); seriesSave(); });
+    body.querySelector('#sCustomSkip').addEventListener('input',e=>{ s.customSkip=e.target.value; renderCalendar(s); seriesSave(); });
+    const gwrap=body.querySelector('#sGroups');
+    gwrap.innerHTML = (globalGroups||[]).map(g=>`<label class="chk"><input type="checkbox" class="sgpick" value="${g.id}" ${((s.targetGroupIds||[]).includes(g.id))?'checked':''}> ${esc(g.name)}</label>`).join('') || '<span class="sub">通讯录暂无群，请先到「群通讯录」添加。</span>';
+    gwrap.querySelectorAll('.sgpick').forEach(cb=>cb.addEventListener('change',()=>{ s.targetGroupIds=Array.from(gwrap.querySelectorAll('.sgpick:checked')).map(x=>x.value); seriesSave(); }));
+    body.querySelector('#sLayout').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{ s.layout=b.dataset.lv; body.querySelector('#sLayout').querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===b)); renderCalendar(s); seriesSave(); }));
+    const fileInput=body.querySelector('#seriesFile');
+    body.querySelector('#seriesUploadBox').addEventListener('click',()=>fileInput.click());
+    fileInput.addEventListener('change',e=>seriesHandleFile(e,s));
+    body.querySelector('#btnTpl').addEventListener('click',()=>seriesDownloadTemplate());
+    body.querySelector('#calPrev').addEventListener('click',()=>{ seriesCalM--; if(seriesCalM<1){seriesCalM=12;seriesCalY--;} renderCalendar(s); });
+    body.querySelector('#calNext').addEventListener('click',()=>{ seriesCalM++; if(seriesCalM>12){seriesCalM=1;seriesCalY++;} renderCalendar(s); });
+    body.querySelector('#btnGenDays').addEventListener('click',()=>seriesGenDays(s));
+    if(s.startDate){ const d=seriesParse(s.startDate); seriesCalY=d.getFullYear(); seriesCalM=d.getMonth()+1; }
+    seriesRefreshStatus(s).then(()=>renderCalendar(s));
+    renderCalendar(s);
+  }
+
+  function seriesStatusOf(s,date){
+    const m = seriesStatus[s.id]; if(m && m[date]) return m[date];
+    return '';
+  }
+  function renderCalendar(s){
+    const grid=document.getElementById('calGrid'); const head=document.getElementById('calHead'); const title=document.getElementById('calTitle'); const hint=document.getElementById('calHint');
+    if(!grid) return;
+    const wd=['日','一','二','三','四','五','六'];
+    head.innerHTML=wd.map(w=>`<div class="weekday">${w}</div>`).join('');
+    title.textContent=seriesCalY+'年'+seriesCalM+'月';
+    const first=new Date(seriesCalY,seriesCalM-1,1); const startDay=first.getDay();
+    const daysInMonth=new Date(seriesCalY,seriesCalM,0).getDate();
+    let html='';
+    for(let i=0;i<startDay;i++) html+='<div class="cell dim"></div>';
+    for(let d=1;d<=daysInMonth;d++){
+      const ds=seriesCalY+'-'+(seriesCalM<10?'0':'')+seriesCalM+'-'+(d<10?'0':'')+d;
+      const day=s.days&&s.days[ds]?s.days[ds]:null;
+      const nonWork=seriesIsNonWork(ds,s);
+      const st=seriesStatusOf(s,ds);
+      let tag='';
+      if(st==='sent') tag='<span class="tag sent">已发</span>';
+      else if(st==='failed') tag='<span class="tag fail">失败</span>';
+      else if(day&&day.skip) tag='<span class="tag skip">跳过</span>';
+      else if(nonWork) tag='<span class="tag off">休</span>';
+      else if(day&&(day.title||day.body||day.img)) tag='<span class="tag ready">待发</span>';
+      const dim = nonWork && !day ? ' dim':'';
+      html+=`<div class="cell${dim}" data-date="${ds}"><div class="d">${d}</div>${tag}</div>`;
+    }
+    grid.innerHTML=html;
+    grid.querySelectorAll('.cell[data-date]').forEach(c=>c.addEventListener('click',()=>seriesOpenDay(s,c.dataset.date)));
+    const configured=Object.keys(s.days||{}).length;
+    const working=Object.keys(s.days||{}).filter(dt=>!seriesIsNonWork(dt,s)).length;
+    hint.textContent=`工作日内已配置 ${working} / 共 ${configured} 天`;
+  }
+
+  function seriesGenDays(s){
+    if(!s.startDate||!s.endDate){ toast('请先设置起止日期'); return; }
+    let cur=seriesParse(s.startDate); const end=seriesParse(s.endDate);
+    if(cur>end){ toast('起止日期无效'); return; }
+    let n=0;
+    while(cur<=end){
+      const ds=seriesFmt(cur);
+      if(!seriesIsNonWork(ds,s)){ if(!s.days) s.days={}; if(!s.days[ds]) s.days[ds]={title:'',body:'',img:'',link:'',skip:false}; n++; }
+      cur.setDate(cur.getDate()+1);
+    }
+    seriesSave(); renderCalendar(s);
+    document.getElementById('dayCount').textContent=Object.keys(s.days||{}).length;
+    toast('已生成 '+n+' 个工作日');
+  }
+
+  function seriesOpenDay(s,date){
+    const day=(s.days&&s.days[date])||{title:'',body:'',img:'',link:'',skip:false,layout:''};
+    let mask=document.getElementById('seriesDayMask');
+    if(!mask){ mask=document.createElement('div'); mask.className='modal-mask'; mask.id='seriesDayMask';
+      mask.innerHTML=`<div class="modal" style="width:680px"><div id="seriesDayInner"></div></div>`; document.body.appendChild(mask);
+      mask.addEventListener('click',e=>{ if(e.target===mask) mask.classList.remove('show'); });
+    }
+    const inner=mask.querySelector('#seriesDayInner');
+    const lv=day.layout||s.layout;
+    function fieldRow(label,help,input){
+      return `<div class="row"><div class="field" style="flex:1"><label>${label}${help?` <span class="sub">${help}</span>`:''}</label>${input}</div></div>`;
+    }
+    inner.innerHTML=`
+      <h3>编辑当日内容 · ${date}${seriesIsNonWork(date,s)?'（'+seriesHolidayName(date,s.customSkip||'')+'·非工作日）':''}</h3>
+      ${fieldRow('标题 <span class="sub">→ 消息首行加粗</span>','',`<input type="text" id="mTitle" value="${esc(day.title||'')}">`)}
+      ${(lv==='text')?'':fieldRow('正文 <span class="sub">→ 标题下正文；图文并排可插入图片</span>','',`<textarea id="mBody" style="min-height:90px">${esc(day.body||'')}</textarea>`)}
+      ${(lv==='text')?'':`<div class="row"><div class="field" style="flex:1"><label>${(lv==='card')?'配图 → 卡片大图（仅一张）':'正文插图（可选）'}</label><div class="row" style="gap:6px;margin:0"><input type="text" id="mImg" value="${esc(day.img||'')}" placeholder="可填图片URL，或点上传"><button id="mUploadBtn" type="button">🖼 上传</button></div></div></div>`}
+      ${fieldRow('跳转链接 <span class="sub">→ 卡片式=整卡跳转；并排/纯文字=文末「查看详情」</span>','',`<input type="text" id="mLink" value="${esc(day.link||'')}">`)}
+      <div class="row">
+        <div class="field" style="max-width:240px"><label>当日版式（覆盖默认）</label>
+          <select id="mLayout"><option value="">跟随系列默认（${lv==='inline'?'图文并排':lv==='card'?'卡片式':'纯文字'}）</option><option value="inline">图文并排</option><option value="card">卡片式</option><option value="text">纯文字</option></select>
+        </div>
+        <label class="switch" style="align-self:flex-end"><input type="checkbox" id="mSkip" ${day.skip?'checked':''}><span class="slider"></span></label>
+        <span style="align-self:flex-end">当日跳过（临时停更，内容保留）</span>
+      </div>
+      <h4>消息预览（按所选版式实时渲染）</h4>
+      <div id="seriesPreview" style="border:1px solid var(--bd,#e5e7eb);border-radius:8px;padding:10px;background:#fafbfc"></div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <button class="primary" id="mSave">保存</button>
+        <button id="mTest">测试发送（隔离群）</button>
+        <button class="ghost" id="mClose">取消</button>
+      </div>
+      <input type="file" id="mFile" accept="image/*" hidden>
+    `;
+    function renderPrev(){
+      const t=inner.querySelector('#mTitle').value, b=inner.querySelector('#mBody')?inner.querySelector('#mBody').value:'', img=inner.querySelector('#mImg').value, link=inner.querySelector('#mLink').value;
+      const layout=inner.querySelector('#mLayout').value||s.layout;
+      const pv=inner.querySelector('#seriesPreview');
+      const esc2=x=>(x||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      if(!t&&!b&&!img){ pv.innerHTML='<div class="sub">填写左侧字段后，这里实时显示群里收到的消息效果</div>'; return; }
+      if(layout==='card'){
+        pv.innerHTML=`<div style="border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;max-width:320px"><div style="height:130px;background:#dde3ea ${img?`url('${esc2(img)}') center/cover`:''}"></div><div style="padding:8px 10px"><div style="font-weight:600">${esc2(t)||'（无标题）'}</div><div style="font-size:12px;color:#666;margin-top:2px">${esc2(b)}</div></div></div><div class="sub" style="margin-top:4px">${link?('点击整张卡片跳转 → '+esc2(link)):'（未填跳转链接）'}</div>`;
+      }else{
+        pv.innerHTML=`<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 10px;max-width:360px"><div style="font-weight:600">${esc2(t)||'（无标题）'}</div>${inner.querySelector('#mBody')?`<div style="font-size:13px;margin-top:4px;white-space:pre-wrap">${esc2(b).replace(/!\[[^\]]*\]\(([^)]+)\)/g,'<img src="$1" style="max-width:100%;border-radius:6px;margin:4px 0;display:block">')}</div>`:''}${link?`<div style="font-size:12px;color:#2563eb;margin-top:4px">🔗 查看详情</div>`:''}</div>`;
+      }
+    }
+    inner.querySelector('#mTitle').addEventListener('input',renderPrev);
+    if(inner.querySelector('#mBody')) inner.querySelector('#mBody').addEventListener('input',renderPrev);
+    inner.querySelector('#mImg').addEventListener('input',renderPrev);
+    inner.querySelector('#mLink').addEventListener('input',renderPrev);
+    inner.querySelector('#mLayout').addEventListener('change',renderPrev);
+    inner.querySelector('#mUploadBtn').addEventListener('click',()=>inner.querySelector('#mFile').click());
+    inner.querySelector('#mFile').addEventListener('change',async e=>{
+      const f=e.target.files[0]; if(!f) return;
+      const r=await readFileAsDataUrl(f); const up=await cloudUpload(r);
+      if(up.success){ inner.querySelector('#mImg').value=up.url; renderPrev(); toast('已上传'); } else { toast('上传失败：'+up.error); }
+      e.target.value='';
+    });
+    renderPrev();
+    inner.querySelector('#mSave').addEventListener('click',()=>{
+      if(!s.days) s.days={};
+      s.days[date]={ title:inner.querySelector('#mTitle').value, body:inner.querySelector('#mBody')?inner.querySelector('#mBody').value:'', img:inner.querySelector('#mImg').value, link:inner.querySelector('#mLink').value, skip:inner.querySelector('#mSkip').checked, layout:inner.querySelector('#mLayout').value };
+      seriesSave(); mask.classList.remove('show'); renderCalendar(s);
+      const dc=document.getElementById('dayCount'); if(dc) dc.textContent=Object.keys(s.days||{}).length;
+      toast('已保存 '+date);
+    });
+    inner.querySelector('#mClose').addEventListener('click',()=>mask.classList.remove('show'));
+    inner.querySelector('#mTest').addEventListener('click',()=>seriesTestSend(s,date));
+    mask.classList.add('show');
+  }
+
+  function seriesBuildPayload(day,s){
+    const layout=day.layout||s.layout;
+    if(layout==='card'){
+      if(day.img){
+        return { msgtype:'news', news:{ articles:[{ title:day.title||'通知', description:(day.body||'').replace(/!\[[^\]]*\]\([^)]*\)/g,'').slice(0,200), url:day.link||'https://work.weixin.qq.com/', picurl:day.img }] } };
+      }
+      // 卡片无图降级为并排
+    }
+    const content=((day.title?('**'+day.title+'**\n'):'')+(day.body||'')+(day.link?('\n[查看详情]('+day.link+')'):''));
+    const articleUrl=day.link||'https://work.weixin.qq.com/';
+    return RenderCore.buildNewsPayload(content,{ articleUrl });
+  }
+  async function seriesTestSend(s,date){
+    const day=(s.days&&s.days[date])||{};
+    if(!day.title&&!day.body&&!day.img){ toast('当天内容为空'); return; }
+    const testG=(globalGroups||[]).find(g=>g.type==='test');
+    if(!testG){ toast('未找到测试群（类型=test），请先在群通讯录添加'); return; }
+    const payload=seriesBuildPayload(day,s);
+    try{
+      const { data, error } = await _sb.functions.invoke('send-v10',{ body:{ items:[{ webhookUrl:testG.webhookUrl, groupName:testG.name, payload }], testMode:true } });
+      if(error) toast('测试发送失败：'+error.message); else toast('已发送测试到隔离群「'+(testG.name||'')+'」');
+    }catch(e){ toast('测试发送异常：'+e.message); }
+  }
+
+  // ---- 表格上传解析 ----
+  async function seriesEnsureXLSX(){
+    if(window.XLSX) return;
+    await new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'; sc.onload=res; sc.onerror=rej; document.head.appendChild(sc); });
+  }
+  function seriesParseCSV(text){
+    const rows=[]; let row=[],cur='',inQ=false;
+    for(let i=0;i<text.length;i++){ const ch=text[i];
+      if(inQ){ if(ch==='"'){ if(text[i+1]==='"'){cur+='"';i++;}else inQ=false; } else cur+=ch; }
+      else { if(ch==='"') inQ=true; else if(ch===','){ row.push(cur);cur=''; } else if(ch==='\n'||ch==='\r'){ if(ch==='\r'&&text[i+1]==='\n')i++; row.push(cur);cur=''; if(row.some(x=>x!==''))rows.push(row); row=[]; } else cur+=ch; }
+    }
+    row.push(cur); if(row.some(x=>x!==''))rows.push(row); return rows;
+  }
+  function readFileAsDataUrl(f){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(f); }); }
+  async function seriesHandleFile(e,s){
+    const f=e.target.files[0]; if(!f) return;
+    try{
+      const buf=await f.arrayBuffer();
+      let rows;
+      if(/\.csv$/i.test(f.name)){ let txt=new TextDecoder('utf-8').decode(buf); if(txt.includes('�')) txt=new TextDecoder('gbk').decode(buf); rows=seriesParseCSV(txt); }
+      else { await seriesEnsureXLSX(); const wb=XLSX.read(buf,{type:'array'}); rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:false}); }
+      seriesIngest(rows,s);
+    }catch(err){ toast('解析失败：'+err.message); }
+    e.target.value='';
+  }
+  function seriesIngest(rows,s){
+    if(!rows||!rows.length){ toast('表格为空'); return; }
+    const head=rows[0].map(x=>String(x||'').trim());
+    const idx=n=>head.findIndex(h=>h.includes(n));
+    let map;
+    if(idx('标题')>=0){ map={date:idx('日期'),title:idx('标题'),desc:idx('描述'),img:idx('图片'),link:idx('跳转'),layout:idx('版式'),skip:idx('跳过')}; rows=rows.slice(1); }
+    else { map={date:0,title:1,desc:2,img:3,link:4,layout:-1,skip:-1}; }
+    const get=(r,i)=>i>=0?(r[i]||'').trim():'';
+    const LV={'并排':'inline','图文并排':'inline','卡片':'card','卡片式':'card','纯文字':'text'};
+    let n=0; s.days=s.days||{};
+    rows.forEach(r=>{
+      let date=get(r,map.date), title=get(r,map.title); if(!date&&!title) return;
+      if(!date){ toast('存在缺日期的行，已跳过：'+(title||'')); return; }
+      const lvRaw=get(r,map.layout); const layout=lvRaw?(LV[lvRaw]||''):'';
+      const skip=/^(是|y|yes|true|1)$/i.test(get(r,map.skip));
+      s.days[date]={ title, body:get(r,map.desc), img:get(r,map.img), link:get(r,map.link), layout, skip }; n++;
+    });
+    seriesSave(); if(activeSeriesId) renderCalendar(s);
+    const dc=document.getElementById('dayCount'); if(dc) dc.textContent=Object.keys(s.days||{}).length;
+    toast('已导入 '+n+' 天');
+  }
+  async function seriesDownloadTemplate(){
+    try{ await seriesEnsureXLSX(); }catch(e){ toast('模板库加载失败，请检查网络'); return; }
+    const ws=XLSX.utils.aoa_to_sheet([
+      ['日期','标题','描述','图片链接','跳转链接','版式','跳过'],
+      ['2026-09-21','【用户成功】用习惯养成学习法拿下季度冠军','30天打卡坚持，她总结出3条可复制经验','','https://yili.com/a','并排','否'],
+      ['2026-09-22','【团队突破】跨部门的协作让他少走了三年弯路','一次复盘会带来的组织效率跃迁','','https://yili.com/b','卡片','否'],
+      ['2026-09-23','【工具上新】培训数据看板2.0上线','支持按部门自动汇总，导出一键完成','','https://yili.com/c','纯文字','']
+    ]);
+    ws['!cols']=[{wch:12},{wch:42},{wch:38},{wch:24},{wch:22},{wch:8},{wch:6}];
+    const help=XLSX.utils.aoa_to_sheet([
+      ['系列推送 · 内容表填写说明'],
+      [],['字段','填写说明'],
+      ['日期','YYYY-MM-DD 格式。必填。'],
+      ['标题','消息首行加粗显示，建议带栏目标签，如【用户成功】'],
+      ['描述','正文内容。图文并排版式=可写多段正文；卡片式=一两行摘要；纯文字=全部正文'],
+      ['图片链接','⚠ 推荐留空：留空后到日历里点开当天「上传图片」，系统自动生成并填充链接，无需手填 URL、不会出错。卡片式=推送时的大图（仅一张）；图文并排=建议留空，在日历编辑正文中穿插多图。若已有可公开访问的图片 URL 也可直接填，系统原样使用（填错则图片异常）。'],
+      ['跳转链接','卡片式=点击整张卡片跳转的地址；图文并排/纯文字=文末自动生成「查看详情」链接'],
+      ['版式','可选值：并排 / 卡片 / 纯文字。留空则跟随系列默认版式'],
+      ['跳过','可选值：是 / 否。填「是」表示该日临时停更（内容保留，之后可取消跳过补发）'],
+      [],['注意：表头名称请勿修改，列顺序不限；无需的列可整列删除']
+    ]);
+    help['!cols']=[{wch:10},{wch:100}];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'内容'); XLSX.utils.book_append_sheet(wb,help,'填写说明');
+    XLSX.writeFile(wb,'系列推送-内容模板.xlsx'); toast('模板已下载');
+  }
+
+
   // ---------- 启动 ----------
   (async function init(){
     // 认证未通过则不加载业务数据（包括 createProject 不会自动写 localStorage）
     // 登录成功后会由 doLogin 内部调用 bootBusiness() 完成首次加载
     const authOk = await setupAuth();
     if(authOk){
-      await loadGlobalGroups();
-      await loadAppSettings();
-      await loadTemplates();
-      await seedDefaultTemplates();
+      // [v10.7.8 性能优化] 4 个独立数据 fetch 改为 Promise.all 并行，原本串行 4×RTT 现在 1×RTT
+      const [g, s, t] = await Promise.all([
+        loadGlobalGroups(),
+        loadAppSettings(),
+        loadTemplates()
+      ]);
+      seedDefaultTemplates(); // 内存操作，无网络，可立即返回
       await loadProjectList();
       if(projects.length===0){
         const id = await createProject();
@@ -4428,6 +4624,3 @@
     }
   })();
 })();
-</script>
-</body>
-</html>

@@ -6,13 +6,12 @@
 //   3) GitHub Action send-due（定时调度）
 // 三处 payload 必须字节级一致 → 群里实际收到的 = 预览看到的。
 //
-// 关键约束（企微 API 硬限制）：
-//   - markdown / markdown_v2 都不支持内嵌图片（![alt](url) 会被降级成文字链接）
-//   - 要实现"一条通知·图文混排"（大图占顶 + 多行文字描述）→ 必须 msgtype='news'
-//     单 article = title (≤64) + description (≤512, 含 \n/列表/链接) + picurl (1 张) + url (跳转)
-//   - picurl 是 URL，企微服务器直接抓——前端/Edge Function 不需要下载转 base64
-//   - v10.3 / v10.4 试过的 template_card（卡片式）/ 分段发送（多消息聚合）均与既定方案不符，
-//     已废弃。v10.5 统一回归 news 单 article。
+// 关键约束（企微 API · v10.7.1 共识，用户截图实证）：
+//   - 企微 markdown_v2 原生支持 inline 图片：![alt](URL) 在 markdown 文本流里直接渲染为图片，
+//     无需走 news 单 article 卡片（news 卡片会把首图当 picurl 提到顶端，无法表达"文字流里嵌 N 张图"）。
+//   - 因此 buildNewsPayload 永远返回 markdown_v2（图文 = inline ![]() 内嵌，不是 news 卡片）。
+//   - 任务列表里的图片附件同样用 ![alt](URL) 内嵌；链接附件用 [🔗 文字](URL)。
+//   - v10.3 / v10.4 试过的 template_card / news 单 article 卡片均已被废弃（与"图文=inline 内嵌"共识不符）。
 
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -43,8 +42,21 @@
     return String(s).replace(re, function (u) { return '[' + u + '](' + u + ')'; });
   }
 
+  // [v10.7.2] 日期/时间拼接：仅日期(date) + 可选时间(time) → "YYYY-MM-DD" 或 "YYYY-MM-DD HH:MM"
+  //   时间允许为空：只填日期时不补时间（避免显示多余的 00:00 / 默认 08:00）。
+  function joinDT(date, time) {
+    if (!date) return '';
+    return time ? (date + ' ' + time) : date;
+  }
+
   function fmtDateTime(s) {
     if (!s) return '';
+    var str = String(s).trim();
+    // [v10.7.2] 仅日期（无时间部分，形如 2026-08-27）直接原样返回——
+    // 否则 new Date('2026-08-27') 被解析为 UTC 0 点、+8 时区 getHours()=8，
+    // 会错误补出 " 08:00"；而 v10.html 的 <input type="date"> 只允许填日期，
+    // 故"具体时间点允许为空"时不应显示默认时间。
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
     var d = new Date(s);
     if (isNaN(d.getTime())) return s;
     var p = function (n) { return n < 10 ? '0' + n : '' + n; };
@@ -57,13 +69,13 @@
     if (!stage) return '';
     var start = stage.startDate || (project && project.startDate) || '';
     var end = stage.endDate || (project && project.endDate) || '';
-    if (start && end) return fmtDateTime(start) + ' ~ ' + fmtDateTime(end);
-    return fmtDateTime(start || end);
+    var startT = stage.startTime || '';
+    var endT = stage.endTime || '';
+    if (start && end) return joinDT(start, startT) + ' ~ ' + joinDT(end, endT);
+    return joinDT(start || end, startT || endT);
   }
 
   // ---------- 变量替换（占位符渲染） ----------
-  // 占位符 5 种格式都支持：{{key}} / 「key」 / 【key】 / （key）全角 / (key)半角
-  // _p.xxx 链式访问 → 必须 `(_p && _p.xxx) || '兜底'` 短路防 undefined 报错
   function safeGet(obj, path, fallback) {
     if (!obj) return fallback;
     var cur = obj;
@@ -73,6 +85,58 @@
       cur = cur[parts[i]];
     }
     return cur == null ? fallback : cur;
+  }
+
+  // [v10.7] {{任务列表}} 占位符渲染：把"该通知已勾选"的学习任务展开为 markdown
+  //   - 输入：stage（tasks[].{id,name,description,dueDate,attachments[].{id,type,name,url,linkText}}）
+  //           ac.taskIds（勾选 id 列表）+ ac.taskOrder（排序）
+  //   - 输出：markdown 文本，每任务一段
+  //       1. 任务名，截止 2026-08-27
+  //          说明：xxx
+  //          📷 [附件名](URL)        ← 图片附件（企微不支持 inline 图片，markdown 链接形式呈现）
+  //          🔗 [链接文字或URL](URL) ← 链接附件
+  //   - 兜底：未勾选任何任务 → 返回空（避免泄露未关联任务 / 避免占位符残留）
+  //   - 避坑：截止日期用全角逗号"，" 分隔（不用全角括号"（）"，避免被 patterns[3] 误吃）。
+  //   - 二次 render 安全：markdown 链接 [text](url) 含半角括号，也不应再被 patterns[4] 误吃；
+  //          所以"任务列表"最终值由 replaceVars 在所有占位符替换完成后，用临时占位符（__TASKLIST_PLACEHOLDER__），
+  //          在最后一步 .replace() 注入，避免与 markdown 链接语法字符冲突。
+  function renderTaskListMarkdown(stage, ac) {
+    if (!stage || !Array.isArray(stage.tasks) || stage.tasks.length === 0) return '';
+    var ac2 = ac || {};
+    var order = (ac2.taskOrder && ac2.taskOrder.length) ? ac2.taskOrder : stage.tasks.map(function (t) { return t.id; });
+    var picked = new Set(ac2.taskIds || []);
+    if (picked.size === 0) return '';
+    var lines = [];
+    order.forEach(function (tid, idx) {
+      var t = stage.tasks.find(function (x) { return x.id === tid; });
+      if (!t || !picked.has(tid)) return;
+      var num = (idx + 1) + '.';
+      var name = (t.name || '').trim() || '未命名任务';
+      var due = t.dueDate ? '，截止 ' + t.dueDate : '';
+      var line = num + ' ' + name + due;
+      if (t.description && String(t.description).trim()) {
+        line += '\n   说明：' + String(t.description).trim();
+      }
+      if (Array.isArray(t.attachments)) {
+        t.attachments.forEach(function (a) {
+          if (!a || !a.url) return;
+          var label = (a.name || '').trim() || (a.type === 'image' ? '图片' : '链接');
+          if (a.type === 'image') {
+            // [v10.7] 图片附件：用 markdown 图片语法 ![alt](url) 呈现——这样 buildNewsPayload 的 extractImgs
+            //   会识别为图，整条通知走 news 单 article 模式（picurl = 第一张图）；不再是 markdown 模式下
+            //   被降级为文字链接（用户反复反馈"图片应是图文形式，不是文字链接"）。
+            line += '\n   ![附件图片：' + label + '](' + a.url + ')';
+          } else {
+            // 链接附件：保留 markdown 链接形式 [🔗 文字](url)，
+            //   用全角方括号「」/【】以外的字符（半角方括号即可，因不在 patterns 里）。
+            var icon = '🔗';
+            line += '\n   ' + icon + ' [' + label + '](' + a.url + ')';
+          }
+        });
+      }
+      lines.push(line);
+    });
+    return lines.length ? lines.join('\n\n') : '';
   }
 
   function replaceVars(stage, n, aud, content) {
@@ -90,27 +154,82 @@
     var _p = {
       项目名: safeGet(project, 'projectName', ''),
       培训目的: safeGet(project, 'purpose', ''),
-      培训类型: safeGet(project, 'type', ''),
-      整体安排: safeGet(project, 'overallPlan', ''),
+      // [v10.7.1] v10.html 项目编辑表单字段语义是"整体培训安排"，字段名 overallArrangement（驼峰）。
+      //         原 overallPlan 是早期遗留，已统一为 overallArrangement。
+      整体安排: safeGet(project, 'overallArrangement', ''),
       项目开始: fmtDateTime(safeGet(project, 'startDate', '')),
       项目结束: fmtDateTime(safeGet(project, 'endDate', '')),
+      // [v10.7.1] 负责人：v10.html data-k="owner"，之前 _p 漏注册 → {{负责人}} 渲染为空。
+      负责人: safeGet(project, 'owner', ''),
+      // [v10.7.1] 阶段字段补全：v10.html 第 2115 行早就有{{阶段开始时间}}{{阶段结束时间}}{{地点/链接}}三个变量，
+      //   之前 _p 缺这三个，{{地点/链接}} 会渲染空白。原「阶段时间」拆为两个独立变量。
       阶段名: safeGet(stage, 'name', ''),
-      阶段时间: fmtStageTime(stage, project),
+      // [v10.7.2] 阶段时间 = 日期 + 可选具体时间（startTime/endTime 允许为空）。
+      //   v10.html 阶段信息块有 startDate/startTime/endDate/endTime 四字段，
+      //   之前 _p 只用了 startDate/endDate，导致"具体时间"渲染不出来且默认补 08:00。
+      阶段开始时间: joinDT(safeGet(stage, 'startDate', ''), safeGet(stage, 'startTime', '')),
+      阶段结束时间: joinDT(safeGet(stage, 'endDate', ''), safeGet(stage, 'endTime', '')),
+      // 地点/链接：纯 URL 时 v10.html 第 2613 行 wrapper 会自动包成 [链接](URL)；此处直接读字符串即可。
+      '地点/链接': safeGet(stage, 'placeOrLink', ''),
       节点名: safeGet(n, 'label', ''),
       节点时间: fmtDateTime(safeGet(ac, 'notifyAt', '')),
       受众: audienceLabel,
-      文案: safeGet(ac, 'content', '')
+      文案: safeGet(ac, 'content', ''),
+      // [v10.7] 任务列表：用临时占位符占位，二次 render 全部跑完后由 replaceVars 末尾的
+      //         .replace() 注入真实 markdown——避开 markdown 链接 [t](url) 的半角括号被
+      //         patterns[4] /\(([^()]+)\)/g 误吃。
+      任务列表: '__TASKLIST_PLACEHOLDER__'
     };
 
     function getByKey(k) {
+      // [v10.7.3] 未知 key 保留原文（m），不替换为空字符串——
+      //   1) 避免双重 render 时把渲染产物里的半角/全角括号误吃：
+      //      如 `（{{节点时间}}）` 经 patterns[0] 替换成 `（2026-08-27 09:00）`，
+      //      再被 patterns[3] 全角括号匹配，把"2026-08-27 09:00"当成未知 key → 整段变空。
+      //   2) 用户写 `(文字注释)` 不是占位符，未知 key 保留括号原样更符合直觉。
+      //   3) typo 占位符 `{{notExist}}` 在群里保留原样，便于运营人定位问题。
       if (_p.hasOwnProperty(k)) return _p[k];
-      return '';
+      return '__TN_KEEP__';
+    }
+
+    // [v10.7.3 关键修复] 在 patterns 替换前先把 markdown 图片/链接语法用临时占位符
+    //   保护起来，跑完 patterns 再恢复。否则 patterns[4] 半角括号正则 /\(([^()]+)\)/g
+    //   会把 !\[alt\](url) 里的 url 当成"占位符 key"匹配出来 → URL 整段被删 → 变成 !\[alt\]
+    //   → preview 显示 "[图片]"、企微渲染失败。任务列表附件 !\[\](URL) 能显示，
+    //   是因为它通过 __TASKLIST_PLACEHOLDER__ 注入，跳过了 patterns。
+    function protectMarkdownSyntax(text) {
+      var IMG_PH = '\u0000TNPIMG\u0000';
+      var LINK_PH = '\u0000TNPLNK\u0000';
+      var imgStore = [];
+      var linkStore = [];
+      // 1) ![alt](url) — 优先匹配，避免被下面的 [text](url) 误吃
+      text = text.replace(/!\[[^\]]*\]\(([^)\s]+)\)/g, function (m) {
+        imgStore.push(m);
+        return IMG_PH + (imgStore.length - 1) + '_';
+      });
+      // 2) [text](url) — 用 (?<!!) 否定回溯，避免吃掉 ![alt](url) 的 [] 部分
+      text = text.replace(/(?<!!)\[[^\]]*\]\(([^)\s]+)\)/g, function (m) {
+        linkStore.push(m);
+        return LINK_PH + (linkStore.length - 1) + '_';
+      });
+      return { text: text, restore: function (t) {
+        t = t.replace(new RegExp(IMG_PH + '(\\d+)_', 'g'), function (_, i) {
+          return imgStore[parseInt(i, 10)] || '';
+        });
+        t = t.replace(new RegExp(LINK_PH + '(\\d+)_', 'g'), function (_, i) {
+          return linkStore[parseInt(i, 10)] || '';
+        });
+        return t;
+      }};
     }
 
     function renderOne(content) {
       // 5 种占位符格式都尝试；短变量名（驼峰 + 短中文）都支持
       // [v10.5 关键修复] String.replace 不支持 regex 数组参数，必须逐个 replace；
       // 之前用数组方式传，v8 静默不替换——这就是为什么 Action 一直发原模板的根因之一。
+      // [v10.7.3 关键修复] 先保护 markdown 图片/链接语法，避免被 patterns[4] 半角括号正则误吃。
+      var prot = protectMarkdownSyntax(content);
+      var guarded = prot.text;
       var patterns = [
         /\{\{([^{}]+)\}\}/g,
         /「([^」]+)」/g,
@@ -120,11 +239,12 @@
       ];
       for (var i = 0; i < patterns.length; i++) {
         patterns[i].lastIndex = 0;  // 复用前重置
-        content = content.replace(patterns[i], function (_, k) {
-          return getByKey(k.trim());
+        guarded = guarded.replace(patterns[i], function (m, k) {
+          var v = getByKey(k.trim());
+          return v === '__TN_KEEP__' ? m : v;
         });
       }
-      return content;
+      return prot.restore(guarded);
     }
 
     var out = renderOne(content);
@@ -137,6 +257,9 @@
         if (out === prev) break;
       }
     }
+    // [v10.7] 任务列表：所有占位符替换跑完后，再把真实任务列表 markdown 注入
+    // （避开 markdown 链接 [t](url) 与占位符 5 格式字符冲突）
+    out = out.split('__TASKLIST_PLACEHOLDER__').join(renderTaskListMarkdown(stage, ac));
     return out;
   }
 
@@ -242,50 +365,16 @@
   function buildNewsPayload(renderedContent, options) {
     options = options || {};
     var testMode = !!options.testMode;
-    var articleUrl = options.articleUrl || 'https://work.weixin.qq.com/';
 
     var raw = renderedContent || '';
     if (testMode) raw = '【测试】' + raw;
 
-    var imgs = extractImgs(raw);
-    var cleaned = stripImgs(raw);
-
-    // 无图：降级 markdown_v2（纯文字够清晰）
-    if (imgs.length === 0) {
-      return { msgtype: 'markdown_v2', markdown_v2: { content: raw } };
-    }
-
-    // 有图：news 单 article
-    var split = splitTitleDesc(cleaned);
-    var title = split.title;
-    var description = split.description;
-
-    // 第一张图 = 主图（picurl）
-    var mainPic = imgs[0].url;
-
-    // 其他图：作为 description 里的可点击链接追加（保留上下文"图文混排"的语义）
-    if (imgs.length > 1) {
-      var moreLinks = imgs.slice(1).map(function (im, i) {
-        var alt = im.alt || ('图片' + (i + 2));
-        return '[查看图片：' + alt + '](' + im.url + ')';
-      }).join('\n');
-      description = (description ? description + '\n\n' : '') + moreLinks;
-    }
-
-    // description 截断到 512 字
-    if (description.length > 512) description = description.slice(0, 511) + '…';
-
-    return {
-      msgtype: 'news',
-      news: {
-        articles: [{
-          title: title,
-          description: description,
-          url: articleUrl,
-          picurl: mainPic
-        }]
-      }
-    };
+    // [v10.7.1] 图文模式 = markdown_v2 + inline ![]() 渲染，不走 news 卡片。
+    //   之前 buildNewsPayload 见有 ![]() 就切 news 模式 → 第一张图被当 picurl 提到顶端，
+    //   与真实企微行为不符（实际企微 markdown_v2 就支持 inline 图片，参考用户截图@image#3）。
+    //   news 单 article 模式被废弃：title/description/picurl + url 强耦合，无法表达"文字流里嵌 N 张图"的版式。
+    //   现在一律 markdown_v2：![]() 在 markdown 流里渲染为图片，[t](u) 渲染为可点击链接。
+    return { msgtype: 'markdown_v2', markdown_v2: { content: raw } };
   }
 
   // 前端预览渲染：把 payload 渲染成企微 news 卡片样式的 HTML

@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>培训通知助手 v10 · 系列推送（原型确认版）</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#ffffff; --ink:#1f2329; --sub:#646a73; --line:#e5e6eb;
+    --brand:#3370ff; --brand2:#0052d9; --ok:#00b42a; --warn:#ff7d00; --err:#f53f3f;
+    --soft:#f2f3f5; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  header{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);padding:10px 18px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0}
+  .badge{font-size:12px;padding:2px 8px;border-radius:20px;background:var(--soft);color:var(--sub)}
+  .badge.proto{background:#fff7e8;color:var(--warn)}
+  .prototype-bar{background:#fff7e8;border-bottom:1px solid #ffe1a8;color:#a05a00;font-size:12px;padding:7px 18px;display:flex;align-items:center;gap:8px}
+  .layout{display:flex;max-width:1400px;margin:0 auto;align-items:flex-start}
+  .sidebar{width:220px;position:sticky;top:98px;max-height:calc(100vh - 98px);overflow:auto;padding:14px 0 14px 14px;flex-shrink:0}
+  .main{flex:1;min-width:0;padding:16px}
+  @media(max-width:900px){.sidebar{display:none}}
+  .nav-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;color:var(--ink);font-size:13px;cursor:pointer;margin-bottom:2px}
+  .nav-item:hover{background:var(--soft)}
+  .nav-item.active{background:#e8f3ff;color:var(--brand2);font-weight:600}
+  .nav-sep{margin:12px 0 6px;font-size:11px;color:var(--sub);text-transform:uppercase;letter-spacing:.5px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:14px}
+  .card h3{margin:0 0 12px;font-size:15px;display:flex;align-items:center;gap:8px}
+  .card h4{margin:16px 0 8px;font-size:13px;color:var(--sub);font-weight:600}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px}
+  label{font-size:12px;color:var(--sub);display:block;margin-bottom:4px}
+  input[type=text],input[type=date],input[type=time],textarea,select{
+    font-family:inherit;font-size:13px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);width:100%
+  }
+  textarea{resize:vertical;min-height:120px;line-height:1.6;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .field{flex:1;min-width:170px}
+  button{font-family:inherit;cursor:pointer;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:13px}
+  button:hover{border-color:var(--brand)}
+  button.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+  button.primary:hover{background:var(--brand2)}
+  button.ghost{background:transparent}
+  .sub{color:var(--sub);font-size:12px}
+  .hint{font-size:11px;color:var(--sub);margin-top:4px;line-height:1.6}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+  .seg button{border:none;border-radius:0;background:transparent;padding:6px 16px;font-size:13px;color:var(--sub);cursor:pointer;white-space:nowrap}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.active{background:var(--brand);color:#fff;font-weight:600}
+  /* 切换开关 */
+  .switch{position:relative;display:inline-block;width:42px;height:24px}
+  .switch input{opacity:0;width:0;height:0}
+  .slider{position:absolute;cursor:pointer;inset:0;background:#ccc;border-radius:24px;transition:.2s}
+  .slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.2s}
+  .switch input:checked + .slider{background:var(--ok)}
+  .switch input:checked + .slider:before{transform:translateX(18px)}
+  .switch-row{display:flex;align-items:center;gap:10px}
+  /* 内容表格 */
+  table.dt{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  table.dt th,table.dt td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  table.dt th{background:var(--soft);color:var(--sub);font-weight:600}
+  table.dt td .mini-img{max-width:64px;max-height:48px;border-radius:4px;border:1px solid var(--line)}
+  /* 日历 */
+  .cal-head{display:flex;align-items:center;gap:14px;margin-bottom:10px}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}
+  .cal-dow{text-align:center;font-size:12px;color:var(--sub);padding:4px 0}
+  .cal-cell{border:1px solid var(--line);border-radius:8px;min-height:84px;padding:6px;background:#fff;position:relative;cursor:pointer;font-size:12px}
+  .cal-cell:hover{border-color:var(--brand)}
+  .cal-cell.out{background:#fafafa;color:#bbb;cursor:default}
+  .cal-cell .d{font-weight:600;font-size:13px}
+  .cal-cell .dot{position:absolute;top:7px;right:8px;width:8px;height:8px;border-radius:50%}
+  .dot.pending{background:var(--brand)}
+  .dot.sent{background:var(--ok)}
+  .dot.skip{background:#c9cdd4}
+  .cal-cell .tt{margin-top:4px;color:var(--sub);font-size:11px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .cal-cell .tag{display:inline-block;font-size:10px;padding:1px 5px;border-radius:4px;margin-top:4px}
+  .tag.skip{background:#f2f3f5;color:var(--sub)}
+  .tag.holiday{background:#ffece8;color:#d4380d}
+  /* 弹层 */
+  .mask{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50}
+  .mask.show{display:flex}
+  .modal{background:#fff;border-radius:12px;width:520px;max-width:92vw;max-height:88vh;overflow:auto;padding:18px}
+  .modal h3{margin:0 0 14px;font-size:15px}
+  .modal .row{margin-bottom:12px}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;display:none;z-index:60}
+  .toast.show{display:block}
+  .legend{display:flex;gap:16px;font-size:12px;color:var(--sub);margin-bottom:6px;flex-wrap:wrap}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .verify{background:#eef7ff;border:1px solid #cfe2ff;border-radius:8px;padding:10px 12px;font-size:12px;color:var(--brand2);line-height:1.7;margin-top:6px}
+  /* 字段对应说明 */
+  .map-hint{font-size:11px;color:var(--sub);margin-top:3px;line-height:1.5}
+  .map-hint b{color:var(--brand2);font-weight:600}
+  /* 预览 */
+  .preview-wrap{border:1px solid var(--line);border-radius:8px;background:#f0f1f2;padding:14px;margin-top:6px}
+  .preview-wrap .pv-title{font-size:11px;color:var(--sub);margin-bottom:8px}
+  .pv-bubble{background:#fff;border-radius:8px;padding:10px 12px;max-width:340px;font-size:13px;line-height:1.6;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+  .pv-bubble .t{font-weight:700;font-size:14px;margin-bottom:4px}
+  .pv-bubble .desc{color:#333}
+  .pv-bubble img{max-width:100%;border-radius:6px;margin:6px 0;display:block}
+  .pv-bubble .lk{color:var(--brand);margin-top:4px}
+  .pv-card{background:#fff;border-radius:8px;overflow:hidden;max-width:300px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+  .pv-card img{width:100%;display:block;aspect-ratio:2.35/1;object-fit:cover;background:#e8eaed}
+  .pv-card .inner{padding:10px 12px}
+  .pv-card .t{font-size:14px;font-weight:600;margin-bottom:4px}
+  .pv-card .desc{font-size:12px;color:#666;line-height:1.55}
+  .pv-empty{font-size:12px;color:var(--sub)}
+  /* 上传 */
+  .upload-box{border:1px dashed #b6bcc6;border-radius:8px;padding:14px;text-align:center;background:#fafbfc;cursor:pointer;margin-bottom:10px}
+  .upload-box:hover{border-color:var(--brand);background:#f5f8ff}
+  .upload-box b{color:var(--brand2)}
+  .fieldspec{font-size:12px;color:var(--sub);background:var(--soft);border-radius:8px;padding:10px 12px;margin-top:10px;line-height:1.9}
+  .fieldspec code{background:#fff;border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px}
+</style>
+</head>
+<body>
+<div class="prototype-bar">⚠️ 原型确认版 · 纯前端演示，未接入真实发送与数据库。确认 UI/交互后再动工，核心定时发送与图文编排功能不受影响。</div>
+<header>
+  <h1>培训通知助手 v10</h1>
+  <span class="badge proto">系列推送 · 原型</span>
+  <span class="badge">v10.7.x 核心功能已验证</span>
+</header>
+<div class="layout">
+  <div class="sidebar">
+    <div class="nav-item">📋 项目通知</div>
+    <div class="nav-sep">通知中心</div>
+    <div class="nav-item active">🗓️ 系列推送 <span class="badge">新</span></div>
+    <div class="nav-item">📊 全局概览</div>
+  </div>
+  <div class="main">
+    <div class="card">
+      <h3>① 系列配置</h3>
+      <div class="row">
+        <div class="field">
+          <label>系列名称</label>
+          <input type="text" id="seriesName" value="文化日刊 · 9月">
+        </div>
+        <div class="field">
+          <label>目标群（webhook）</label>
+          <select id="seriesGroup">
+            <option>集团文化大群（webhook）</option>
+            <option>A+经理人学员群（webhook）</option>
+            <option>部门学习交流群（webhook）</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field" style="max-width:200px">
+          <label>每日发送时间</label>
+          <input type="time" id="seriesTime" value="08:40">
+        </div>
+        <div class="field" style="max-width:180px">
+          <label>开始日期</label>
+          <input type="date" id="seriesStart" value="2026-09-21">
+        </div>
+        <div class="field" style="max-width:180px">
+          <label>结束日期</label>
+          <input type="date" id="seriesEnd" value="2026-09-30">
+        </div>
+        <div class="field" style="max-width:240px">
+          <label>&nbsp;</label>
+          <div class="switch-row">
+            <label class="switch"><input type="checkbox" id="skipHoliday" checked><span class="slider"></span></label>
+            <span>自动排除法定节假日与周末</span>
+          </div>
+        </div>
+      </div>
+      <div class="row" style="align-items:flex-end">
+        <div class="field" style="max-width:auto;flex:none">
+          <label>消息版式（单日可在日历里覆盖）</label>
+          <div class="seg" id="layoutSeg">
+            <button class="active" data-lv="inline">图文并排</button>
+            <button data-lv="card">卡片式</button>
+            <button data-lv="text">纯文字</button>
+          </div>
+        </div>
+        <div class="sub" style="padding-bottom:8px">编辑时字段随版式自动增减</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>② 内容导入</h3>
+      <div class="upload-box" onclick="document.getElementById('fileInput').click()">
+        📎 点击上传表格文件（<b>.xlsx / .csv</b>），自动识别列并生成整月内容
+        <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button onclick="downloadTemplate()">⬇ 下载 Excel 填写模板</button>
+        <span class="sub">字段说明与示例已内置在模板的「填写说明」工作表中；图片建议留空、上传请在日历里完成，系统自动生成链接</span>
+      </div>
+      <div class="hint" style="margin-top:12px">导入结果请到下方日历查看与编辑：每格一天，点开可修改内容、预览消息效果、测试发送。</div>
+    </div>
+
+    <div class="card">
+      <h3>③ 日历视图（整月概览）</h3>
+      <div class="legend">
+        <span><i style="background:var(--brand)"></i>待发送</span>
+        <span><i style="background:var(--ok)"></i>已发送</span>
+        <span><i style="background:#c9cdd4"></i>跳过（周末/节假日）</span>
+      </div>
+      <div class="cal-head">
+        <button onclick="changeMonth(-1)">‹</button>
+        <b id="calTitle">2026 年 9 月</b>
+        <button onclick="changeMonth(1)">›</button>
+        <span class="sub" id="calStat"></span>
+      </div>
+      <div class="cal-grid" id="calDow">
+        <div class="cal-dow">一</div><div class="cal-dow">二</div><div class="cal-dow">三</div><div class="cal-dow">四</div><div class="cal-dow">五</div><div class="cal-dow">六</div><div class="cal-dow">日</div>
+      </div>
+      <div class="cal-grid" id="calGrid" style="margin-top:8px"></div>
+      <div class="verify" id="verifyBox">— 校验提示将显示在这里 —</div>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="dayMask">
+  <div class="modal" style="width:640px">
+    <h3 id="dayModalTitle">编辑当日内容</h3>
+    <div class="row">
+      <div class="field" style="max-width:280px">
+        <label>当日版式</label>
+        <select id="mLayout" onchange="renderPreview()">
+          <option value="">跟随系列默认</option>
+          <option value="inline">图文并排（markdown）</option>
+          <option value="card">卡片式（大图+标题+摘要）</option>
+          <option value="text">纯文字</option>
+        </select>
+      </div>
+      <div class="field" style="max-width:260px">
+        <div class="switch-row">
+          <label class="switch"><input type="checkbox" id="mSkip"><span class="slider"></span></label>
+          <span>当日跳过（临时停更）</span>
+        </div>
+        <div class="hint">节假日表之外的临时停更、内容需拦停时用；内容保留，取消跳过即可补发。</div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>标题 → 消息首行加粗</label>
+        <input type="text" id="mTitle" oninput="renderPreview()">
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label id="mBodyLabel">正文 → 标题下的正文内容</label>
+        <textarea id="mBody" style="min-height:90px" oninput="renderPreview()"></textarea>
+        <div id="mInsertRow" style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button onclick="insertImage()">🖼 上传并插入图片</button>
+          <span class="hint">图片插入到光标处，可多张穿插；上传后自动变链接，与现有通知同款链路</span>
+        </div>
+      </div>
+    </div>
+    <div class="row" id="mImgRow">
+      <div class="field">
+        <label>配图 → 推送时的那张大图（上传或填链接，卡片式仅此一张）</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="mImg" oninput="renderPreview()">
+          <button onclick="uploadModalImg()" style="white-space:nowrap">🖼 上传</button>
+        </div>
+      </div>
+    </div>
+    <div class="row" id="mLinkRow">
+      <div class="field">
+        <label id="mLinkLabel">跳转链接</label>
+        <input type="text" id="mLink" oninput="renderPreview()">
+      </div>
+    </div>
+    <h4>消息预览（按所选版式实时渲染）</h4>
+    <div class="preview-wrap"><div class="pv-title">企业微信群 · 消息效果</div><div id="pvBody"></div></div>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="primary" onclick="saveDay()">保存</button>
+      <button onclick="testSend()">测试发送（隔离群）</button>
+      <button class="ghost" onclick="closeDay()">取消</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<input type="file" id="mImgFile" accept="image/*" hidden>
+<input type="file" id="mImgFile2" accept="image/*" hidden>
+
+<script>
+// ===== mock 数据（仅原型）=====
+const HOLIDAYS = {'2026-10-01':'国庆','2026-10-02':'国庆','2026-10-03':'国庆','2026-10-04':'国庆','2026-10-05':'国庆','2026-10-06':'国庆','2026-10-07':'国庆'};
+let days = { // 演示数据，实际版来自模板上传
+  '2026-09-21':{title:'【用户成功】用习惯养成学习法拿下季度冠军',desc:'30天打卡坚持，她总结出3条可复制经验',img:'',link:'https://yili.com/a',layout:'',skip:false},
+  '2026-09-22':{title:'【团队突破】跨部门的协作让他少走了三年弯路',desc:'一次复盘会带来的组织效率跃迁',img:'',link:'https://yili.com/b',layout:'card',skip:false},
+  '2026-09-23':{title:'【工具上新】培训数据看板2.0上线',desc:'支持按部门自动汇总，导出一键完成',img:'',link:'https://yili.com/c',layout:'text',skip:false}
+};
+let curY = 2026, curM = 9; // 展示月份
+
+function fmt(d){return d.toISOString().slice(0,10);}
+function isWeekend(d){const w=d.getDay();return w===0||w===6;}
+function isHoliday(s){return !!HOLIDAYS[s];}
+
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);}
+
+let seriesLayout='inline';
+document.querySelectorAll('#layoutSeg button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('#layoutSeg button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');seriesLayout=b.dataset.lv;
+  };
+});
+
+// ===== Excel 模板下载与表格解析 =====
+async function ensureXLSX(){
+  if(window.XLSX)return;
+  try{
+    await new Promise((res,rej)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';s.onload=res;s.onerror=rej;document.head.appendChild(s);});
+  }catch(err){toast('解析库加载失败，请检查网络后重试');throw err;}
+}
+async function downloadTemplate(){
+  try{await ensureXLSX();}catch(e){return;}
+  const ws=XLSX.utils.aoa_to_sheet([
+    ['日期','标题','描述','图片链接','跳转链接','版式','跳过'],
+    ['2026-09-21','【用户成功】用习惯养成学习法拿下季度冠军','30天打卡坚持，她总结出3条可复制经验','','https://yili.com/a','并排','否'],
+    ['2026-09-22','【团队突破】跨部门的协作让他少走了三年弯路','一次复盘会带来的组织效率跃迁','','https://yili.com/b','卡片','否'],
+    ['2026-09-23','【工具上新】培训数据看板2.0上线','支持按部门自动汇总，导出一键完成','','https://yili.com/c','纯文字','']
+  ]);
+  ws['!cols']=[{wch:12},{wch:42},{wch:38},{wch:24},{wch:22},{wch:8},{wch:6}];
+  const help=XLSX.utils.aoa_to_sheet([
+    ['系列推送 · 内容表填写说明'],
+    [],
+    ['字段','填写说明'],
+    ['日期','YYYY-MM-DD 格式。可留空：留空时按行顺序自动填充工作日（自动排除周末与法定节假日）'],
+    ['标题','消息首行加粗显示，建议带栏目标签，如【用户成功】'],
+    ['描述','正文内容。图文并排版式=可写多段正文；卡片式=一两行摘要'],
+    ['图片链接','⚠ 推荐留空：留空后在日历里点开当天「上传图片」，系统自动生成并填充链接，无需手填 URL、不会出错（运营人全程不碰 URL 字符串）。卡片式=推送时的大图（仅一张）；图文并排=建议留空，在日历编辑正文中穿插多图。若你已有可公开访问的图片 URL，也可直接填到此列，系统将原样使用（不自动识别，填错则图片显示异常）。'],
+    ['跳转链接','卡片式=点击整张卡片跳转的地址；图文并排/纯文字=文末自动生成「查看详情」链接'],
+    ['版式','可选值：并排 / 卡片 / 纯文字。留空则跟随系列默认版式'],
+    ['跳过','可选值：是 / 否。填「是」表示该日临时停更（内容保留，之后可取消跳过补发）'],
+    [],
+    ['注意：表头名称请勿修改，列顺序不限；无需的列可整列删除']
+  ]);
+  help['!cols']=[{wch:10},{wch:100}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'内容');
+  XLSX.utils.book_append_sheet(wb,help,'填写说明');
+  XLSX.writeFile(wb,'系列推送-内容模板.xlsx');
+  toast('模板已下载');
+}
+function parseCSVText(text){
+  const rows=[];let row=[],cur='',inQ=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(inQ){
+      if(ch==='"'){if(text[i+1]==='"'){cur+='"';i++;}else inQ=false;}
+      else cur+=ch;
+    }else{
+      if(ch==='"')inQ=true;
+      else if(ch===','){row.push(cur);cur='';}
+      else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&text[i+1]==='\n')i++;row.push(cur);cur='';if(row.some(x=>x!==''))rows.push(row);row=[];}
+      else cur+=ch;
+    }
+  }
+  row.push(cur);if(row.some(x=>x!==''))rows.push(row);
+  return rows;
+}
+function ingestRows(rows){
+  if(!rows.length)return;
+  const head=rows[0].map(x=>x.trim());
+  const idx=n=>head.findIndex(h=>h.includes(n));
+  let map;
+  if(idx('标题')>=0){ // 表头模式
+    map={date:idx('日期'),title:idx('标题'),desc:idx('描述'),img:idx('图片'),link:idx('跳转'),layout:idx('版式'),skip:idx('跳过')};
+    rows=rows.slice(1);
+  }else{map={date:0,title:1,desc:2,img:3,link:4,layout:-1,skip:-1};}
+  const get=(r,i)=>i>=0?(r[i]||'').trim():'';
+  let n=0;
+  rows.forEach(r=>{
+    let date=get(r,map.date),title=get(r,map.title);
+    if(!date&&!title)return;
+    if(!date){
+      let d=new Date(2026,8,20);
+      while(true){d.setDate(d.getDate()+1);if(!isWeekend(d)&&!isHoliday(fmt(d))){date=fmt(d);break;}}
+    }
+    const LV={'并排':'inline','图文并排':'inline','卡片':'card','卡片式':'card','纯文字':'text'};
+    const lvRaw=get(r,map.layout);
+    const layout=lvRaw?(LV[lvRaw]||''):seriesLayout;
+    const skip=/^(是|y|yes|true|1)$/i.test(get(r,map.skip));
+    days[date]={title,desc:get(r,map.desc),img:get(r,map.img),link:get(r,map.link),layout,skip};n++;
+  });
+  renderCalendar();verify();
+  toast('已从表格解析 '+n+' 条');
+}
+document.getElementById('fileInput').addEventListener('change',async e=>{
+  const f=e.target.files[0];if(!f)return;
+  const buf=await f.arrayBuffer();
+  if(/\.csv$/i.test(f.name)){
+    let text=new TextDecoder('utf-8').decode(buf);
+    if(text.includes('\uFFFD'))text=new TextDecoder('gbk').decode(buf); // Excel 中文导出常为 GBK
+    ingestRows(parseCSVText(text));
+  }else{
+    try{await ensureXLSX();}catch(err){return;}
+    const wb=XLSX.read(buf,{type:'array'});
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:false});
+    ingestRows(rows.map(r=>r.map(c=>c==null?'':String(c).trim())));
+  }
+  e.target.value='';
+});
+
+function changeMonth(delta){curM+=delta;if(curM<1){curM=12;curY--;}if(curM>12){curM=1;curY++;}renderCalendar();}
+
+function renderCalendar(){
+  const grid=document.getElementById('calGrid');grid.innerHTML='';
+  document.getElementById('calTitle').textContent=curY+' 年 '+curM+' 月';
+  const first=new Date(curY,curM-1,1);
+  const startDow=(first.getDay()+6)%7; // 周一=0
+  const daysInMonth=new Date(curY,curM,0).getDate();
+  // 前置空格
+  for(let i=0;i<startDow;i++){const c=document.createElement('div');c.className='cal-cell out';grid.appendChild(c);}
+  let pending=0,sent=0,skip=0;
+  for(let d=1;d<=daysInMonth;d++){
+    const date=new Date(curY,curM-1,d);
+    const s=fmt(date);
+    const cell=document.createElement('div');cell.className='cal-cell';
+    let dot='',tag='',tt='',cls='';
+    if(days[s]){
+      const dd=days[s];
+      if(dd.skip){dot='skip';tag='<span class="tag skip">跳过</span>';skip++;cls='skip';}
+      else{dot='pending';pending++;}
+      tt=dd.title||'';
+    } else if(isWeekend(date)||isHoliday(s)){
+      dot='skip';tag=isHoliday(s)?`<span class="tag holiday">${HOLIDAYS[s]}</span>`:'<span class="tag skip">周末</span>';skip++;cls='skip';
+    } else {tt='（空，待填）';pending++;}
+    cell.innerHTML=`<div class="d">${d}</div><span class="dot ${dot}"></span>${tag?tag:''}<div class="tt">${tt}</div>`;
+    if(cls!=='skip'){cell.onclick=()=>openDay(s);}
+    grid.appendChild(cell);
+  }
+  document.getElementById('calStat').textContent=`待发 ${pending} · 已发 ${sent} · 跳过 ${skip}`;
+}
+
+function openDay(s){
+  const d=days[s]||{title:'',desc:'',img:'',link:'',skip:false,layout:''};
+  document.getElementById('dayModalTitle').textContent='编辑当日内容 · '+s+(isHoliday(s)?'（'+HOLIDAYS[s]+'）':isWeekend(new Date(s))?'（周末）':'');
+  document.getElementById('mTitle').value=d.title||'';
+  document.getElementById('mBody').value=d.desc||'';
+  document.getElementById('mImg').value=d.img||'';
+  document.getElementById('mLink').value=d.link||'';
+  document.getElementById('mLayout').value=d.layout||'';
+  document.getElementById('mSkip').checked=!!d.skip;
+  document.getElementById('dayMask').dataset.date=s;
+  document.getElementById('dayMask').classList.add('show');
+  renderPreview();
+}
+function closeDay(){document.getElementById('dayMask').classList.remove('show');}
+function saveDay(){
+  const s=document.getElementById('dayMask').dataset.date;
+  days[s]={title:document.getElementById('mTitle').value,desc:document.getElementById('mBody').value,img:document.getElementById('mImg').value,link:document.getElementById('mLink').value,layout:document.getElementById('mLayout').value,skip:document.getElementById('mSkip').checked};
+  closeDay();renderCalendar();verify();toast('已保存 '+s);
+}
+// 图片上传（原型用本地对象URL模拟；实际版走现有"上传→URL→自动填充"链路）
+function insertImage(){document.getElementById('mImgFile').click();}
+function uploadModalImg(){document.getElementById('mImgFile2').click();}
+document.getElementById('mImgFile').addEventListener('change',e=>{
+  const f=e.target.files[0];if(!f)return;
+  const url=URL.createObjectURL(f);
+  const ta=document.getElementById('mBody');
+  const pos=ta.selectionStart!=null?ta.selectionStart:ta.value.length;
+  ta.value=ta.value.slice(0,pos)+'\n![]('+url+')\n'+ta.value.slice(pos);
+  renderPreview();toast('已插入图片（实际版将上传并生成永久链接）');
+  e.target.value='';
+});
+document.getElementById('mImgFile2').addEventListener('change',e=>{
+  const f=e.target.files[0];if(!f)return;
+  document.getElementById('mImg').value=URL.createObjectURL(f);
+  renderPreview();toast('已上传（实际版将上传并生成永久链接）');
+  e.target.value='';
+});
+function effLayout(){return document.getElementById('mLayout').value||seriesLayout;}
+function esc(x){return (x||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');}
+function mdBody(s){ // 正文文本 → HTML，支持 ![]() 图片穿插
+  return esc(s).replace(/!\[\]\(([^)]+)\)/g,'<img src="$1">').replace(/\n/g,'<br>');
+}
+function renderPreview(){
+  const lv=effLayout();
+  // 字段随版式增减：并排=正文内穿插图片，无独立配图；卡片=仅一张配图，无正文插图；纯文字=无图
+  document.getElementById('mInsertRow').style.display = lv==='inline' ? '' : 'none';
+  document.getElementById('mImgRow').style.display   = lv==='card'   ? '' : 'none';
+  document.getElementById('mBodyLabel').textContent  = lv==='card' ? '摘要 → 卡片图下的一两行简介'
+    : ('正文 → 标题下的正文内容'+(lv==='inline'?'（可多行，图片经「上传并插入」穿插其中）':''));
+  document.getElementById('mLinkLabel').textContent  = lv==='card' ? '跳转链接 → 点击整张卡片跳转'
+    : '文末链接（可选）→ 自动生成「查看详情」追加在正文后';
+  const t=esc(document.getElementById('mTitle').value),d=document.getElementById('mBody').value;
+  const img=document.getElementById('mImg').value,link=document.getElementById('mLink').value;
+  const body=document.getElementById('pvBody');
+  if(!t&&!d&&!img){body.innerHTML='<div class="pv-empty">填写左侧字段后，这里实时显示群里收到的消息效果</div>';return;}
+  if(lv==='card'){
+    body.innerHTML=`<div class="pv-card">${img?`<img src="${esc(img)}" onerror="this.style.background='#e8eaed'">`:''}<div class="inner"><div class="t">${t||'（无标题）'}</div><div class="desc">${esc(d.replace(/!\[\]\([^)]*\)/g,''))}</div></div></div><div class="hint" style="margin-top:6px">${link?'点击整张卡片跳转 → '+esc(link):'（未填跳转链接，卡片仅展示）'}</div>`;
+  }else{
+    const linkHtml=link?`<div class="lk">🔗 [查看详情](${esc(link)})</div>`:'';
+    const inner = lv==='inline' ? mdBody(d) : esc(d).replace(/\n/g,'<br>');
+    body.innerHTML=`<div class="pv-bubble"><div class="t">${t||'（无标题）'}</div>${inner}${linkHtml}</div><div class="hint" style="margin-top:6px">${lv==='inline'?'markdown 图文混排，与现有通知同款渲染':'纯文字消息'}</div>`;
+  }
+}
+function testSend(){toast('（原型）将按当前版式向隔离测试群发送预览，不触达生产群');}
+
+function verify(){
+  const s=document.getElementById('seriesStart').value,e=document.getElementById('seriesEnd').value;
+  const keys=Object.keys(days);
+  const inRange=keys.filter(k=>k>=s&&k<=e);
+  const emptyWd=[];
+  let d=new Date(s);const end=new Date(e);
+  while(d<=end){const s2=fmt(d);if(!isWeekend(d)&&!isHoliday(s2)&&!days[s2])emptyWd.push(s2);d.setDate(d.getDate()+1);}
+  const box=document.getElementById('verifyBox');
+  let msg=`起止：${s} ~ ${e}，每日 ${document.getElementById('seriesTime').value}；共导入 ${keys.length} 条。`;
+  if(emptyWd.length)msg+=`<br>⚠️ 范围内有 ${emptyWd.length} 个工作日未填内容（如 ${emptyWd.slice(0,3).join('、')}…），到点将跳过该天。`;
+  else msg+='<br>✅ 工作日均已覆盖内容。';
+  box.innerHTML=msg;
+}
+
+// 初始化
+renderCalendar();verify();
+</script>
+</body>
+</html>

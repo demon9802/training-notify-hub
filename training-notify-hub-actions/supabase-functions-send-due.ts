@@ -107,27 +107,6 @@ function fmtDateTime(s: any): string {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
-// [v10.7.6 关键修复] 解析 notifyAt（前端 datetime-local 保存的无时区字符串）：
-//   ISO 8601 "YYYY-MM-DDTHH:MM" 不带时区时，JS Date/Deno 解析为 UTC。
-//   但 UI 输入 datetime-local 默认是「本地时间」（即用户期望的北京时间）。
-//   不带时区时强制当作东八区（+08:00）解析，与前端 UI 保持一致。
-//   带时区（Z / +HH:MM）按原样解析。
-function parseNotifyAtBeijing(s: any): number {
-  if (!s) return NaN;
-  const str = String(s).trim();
-  // 已有时区信息：原样解析
-  if (/[Zz]$|[+\-]\d{2}:?\d{2}$/.test(str)) {
-    const d = new Date(str);
-    return d.getTime();
-  }
-  // 仅日期 "YYYY-MM-DD"：当作当天北京时间 00:00
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
-    return new Date(str + 'T00:00:00+08:00').getTime();
-  }
-  // 无时区 "YYYY-MM-DDTHH:MM[:SS]"：强制按东八区解析
-  return new Date(str + '+08:00').getTime();
-}
-
 function fmtStageTime(stage: any, project: any): string {
   if (!stage) return '';
   const start = stage.startDate || (project && project.startDate) || '';
@@ -356,36 +335,15 @@ async function main() {
   if (!projResp.ok) return { ok: false, error: '读取项目失败: ' + projResp.status };
   const projRows = await projResp.json();
 
-  // [v10.7.19] 诊断：读取 pg_cron 任务列表（如 PostgREST 暴露 cron schema），返回给调用方排查定时未触发。
-  let cronJobs: any[] = [];
-  try {
-    const cronResp = await sbRest('cron.job?select=*');
-    if (cronResp.ok) cronJobs = await cronResp.json();
-  } catch (e) { /* cron schema 可能未暴露给 PostgREST，忽略 */ }
-
   // 读取已 sent 的 tn_sends，用于 reconcile 回灌 n.sentAudiences
-  // [v10.7.6] 加陈旧性过滤：sent_at 超过 STALE_DAYS 天的视为历史脏数据（来自旧版"立即发送"或上次测试），
-  //          不参与回灌 + 自动 DELETE，避免死循环阻断新定时任务。
-  const STALE_MS = 7 * 24 * 3600 * 1000;
   const sentResp = await sbRest(`tn_sends?${q({ select: 'id,status,sent_at', status: 'eq.sent' })}`);
   const sentRows = sentResp.ok ? await sentResp.json() : [];
   const sentMap = new Map<string, Set<string>>(); // key: pid::nid → Set(aud)
   const sentAtMap = new Map<string, string>();      // key: sendId → sent_at
-  const now0 = new Date();
   for (const r of sentRows || []) {
     const m = /^([^:]+):([^:]+):([^:]+):(main|reminder1d|reminder2h)$/.exec(r.id || '');
     if (!m) continue;
     if (r.status !== 'sent') continue;
-    // 陈旧判定：sent_at 缺失 / 解析失败 / 距今超过 7 天 → 不回灌
-    let sentAtMs = NaN;
-    if (r.sent_at) sentAtMs = new Date(r.sent_at).getTime();
-    const isStale = isNaN(sentAtMs) || (now0.getTime() - sentAtMs > STALE_MS);
-    if (isStale) {
-      // 自动清理脏记录（service_role 有 DELETE 权限，匿名键会被 RLS 挡 → 必须由函数清理）
-      await sbRest(`tn_sends?${q({ id: 'eq.' + r.id })}`, 'DELETE');
-      console.log('[v10.7.6] stale tn_sends cleaned:', r.id, 'sent_at=', r.sent_at);
-      continue;
-    }
     const [, pid, nid, aud] = m;
     const k = pid + '::' + nid;
     if (!sentMap.has(k)) sentMap.set(k, new Set());
@@ -398,7 +356,6 @@ async function main() {
   const skipped: string[] = [];
   const errors: string[] = [];
   let totalReconciled = 0;
-  const diag: any[] = []; // [v10.7.6 调试] 每条 (pid/nid/aud) 的判定路径
 
   for (const row of projRows || []) {
     const projectId = String(row.key).replace(/^project:/, '');
@@ -411,33 +368,17 @@ async function main() {
       for (const n of (stage.notifications || [])) {
         for (const a of AUDIENCES) {
           const ac = (n.audienceContent || {})[a];
-          if (!ac || !ac.enabled) { diag.push({ pid: projectId, nid: n.id, aud: a, why: 'disabled-or-no-ac' }); continue; }
-          if (!ac.notifyAt) { diag.push({ pid: projectId, nid: n.id, aud: a, why: 'no-notifyAt' }); continue; }
-          // [v10.7.6 关键] 用 parseNotifyAtBeijing 解析（无时区强制 +08:00），避免 Deno 把 "10:45" 当 UTC 解析导致 8h 偏差
-          const atMs = parseNotifyAtBeijing(ac.notifyAt);
-          if (isNaN(atMs)) { diag.push({ pid: projectId, nid: n.id, aud: a, why: 'bad-notifyAt', notifyAt: ac.notifyAt }); continue; }
-          if (now.getTime() < atMs) { diag.push({ pid: projectId, nid: n.id, aud: a, why: 'future', notifyAt: ac.notifyAt, atMs }); continue; }
-          if (now.getTime() > atMs + 24 * 3600 * 1000) { diag.push({ pid: projectId, nid: n.id, aud: a, why: 'past-24h', notifyAt: ac.notifyAt, atMs }); continue; }
-          if (!(ac.targetGroups || []).length) { skipped.push(`${projectId}/${n.id}/${a}:无目标群`); diag.push({ pid: projectId, nid: n.id, aud: a, why: 'no-target-groups' }); continue; }
+          if (!ac || !ac.enabled) continue;
+          if (!ac.notifyAt) continue;
+          const at = new Date(ac.notifyAt);
+          if (isNaN(at.getTime())) continue;
+          if (now < at) continue;                                   // 未到点
+          if (now.getTime() > at.getTime() + 24 * 3600 * 1000) continue; // 超过 24h 窗口
+          if (!(ac.targetGroups || []).length) { skipped.push(`${projectId}/${n.id}/${a}:无目标群`); continue; }
+          // 已被前端手动发送标记过 → 跳过（与 tn_sends claim 双重防重发）
+          if ((n.sentAudiences || []).includes(a)) continue;
 
           const sendId = `${projectId}:${n.id}:${a}:main`;
-          // [v10.7.19] 真源防重发：以 tn_sends 表为准，不再依赖 n.sentAudiences / n._resetAt（前端状态同步不可靠）。
-          //   - 若 tn_sends 存在 status=sent 且 sent_at >= notifyAt - 1min：已真实发送，跳过。
-          //   - 若存在旧记录（sent_at < notifyAt 或 status != sent）：删除旧 claim 后重新发送。
-          const existingResp = await sbRest(`tn_sends?${q({ id: 'eq.' + sendId, select: '*' })}`);
-          const existingRows = existingResp.ok ? await existingResp.json() : [];
-          const existing = existingRows[0];
-          if (existing && existing.status === 'sent' && existing.sent_at) {
-            const existingSentAtMs = new Date(existing.sent_at).getTime();
-            if (existingSentAtMs >= atMs - 60 * 1000) {
-              diag.push({ pid: projectId, nid: n.id, aud: a, why: 'already-sent', sentAt: existing.sent_at });
-              continue;
-            }
-          }
-          if (existing) {
-            await sbRest(`tn_sends?${q({ id: 'eq.' + sendId })}`, 'DELETE');
-          }
-
           if (!(await claim(sendId))) { skipped.push(`${projectId}/${n.id}/${a}:已被认领`); continue; }
 
           const targets = (ac.targetGroups || []).map((id: string) => groups.find((g: any) => g.id === id)).filter(Boolean);
@@ -458,8 +399,6 @@ async function main() {
             if (!n.sentAudiences) n.sentAudiences = [];
             if (!n.sentAudiences.includes(a)) n.sentAudiences.push(a);
             sent.push(`${projectId}/${n.id}/${a}`);
-            // [v10.7.15] 真实发送成功后，_resetAt 使命完成，删除以避免未来干扰
-            delete (n as any)._resetAt;
           } else {
             await markSent(sendId, 'failed', errs.join('; '));
             errors.push(`${projectId}/${n.id}/${a}: ${errs.join('; ')}`);
@@ -467,7 +406,7 @@ async function main() {
           changed = true;
 
           // 提醒 T-1 天（确认节点）
-          if (!n.reminder1dSentAt && now.getTime() >= atMs - 24 * 3600 * 1000 && now.getTime() < atMs && reminderWebhook) {
+          if (!n.reminder1dSentAt && now >= new Date(at.getTime() - 24 * 3600 * 1000) && now < at && reminderWebhook) {
             const rid = `${projectId}:${n.id}:${a}:reminder1d`;
             if (await claim(rid)) {
               const content = `【节点确认】${project.projectName || '项目'} · ${stage.name || '阶段'} · ${NODE_LABEL[n.node as string] || ''}通知（${AUD_LABEL[a]}）\n发送时间：${ac.notifyAt}\n请确认文案与受众已就绪。`;
@@ -478,7 +417,7 @@ async function main() {
             }
           }
           // 提醒 T-2 小时（测试版全量）
-          if (!n.reminder2hSentAt && now.getTime() >= atMs - 2 * 3600 * 1000 && now.getTime() < atMs && reminderWebhook) {
+          if (!n.reminder2hSentAt && now >= new Date(at.getTime() - 2 * 3600 * 1000) && now < at && reminderWebhook) {
             const rid = `${projectId}:${n.id}:${a}:reminder2h`;
             if (await claim(rid)) {
               const content = `【发送前测试】${project.projectName || '项目'} · ${stage.name || '阶段'} · ${NODE_LABEL[n.node as string] || ''}通知（${AUD_LABEL[a]}）将在 ${ac.notifyAt} 发送，以下为测试版全文：\n\n${renderContent(project, stage, n, ac) || ac.content || ''}`;
@@ -513,7 +452,7 @@ async function main() {
     }
   }
 
-  return { ok: true, runId: RUN_ID, scanned: (projRows || []).length, sent, skipped, errors, reconciled: totalReconciled, diag, cronJobs, now: now.toISOString() };
+  return { ok: true, runId: RUN_ID, scanned: (projRows || []).length, sent, skipped, errors, reconciled: totalReconciled };
 }
 
 // ============ HTTP 入口 ============
